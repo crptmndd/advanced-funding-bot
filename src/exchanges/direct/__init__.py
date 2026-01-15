@@ -9,6 +9,10 @@ from .bingx import BingXDirectExchange
 from .mexc import MEXCDirectExchange
 from .hyperliquid import HyperliquidDirectExchange
 from .gate import GateDirectExchange
+from .pacifica import PacificaDirectExchange
+from .lighter import LighterDirectExchange
+from .backpack import BackpackDirectExchange
+from .drift import DriftDirectExchange
 
 __all__ = [
     "DirectAPIExchange",
@@ -20,5 +24,9 @@ __all__ = [
     "MEXCDirectExchange",
     "HyperliquidDirectExchange",
     "GateDirectExchange",
+    "PacificaDirectExchange",
+    "LighterDirectExchange",
+    "BackpackDirectExchange",
+    "DriftDirectExchange",
 ]
 

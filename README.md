@@ -4,7 +4,7 @@ A powerful tool for collecting and analyzing funding rates across multiple crypt
 
 ## 🚀 Features
 
-- **9 Supported Exchanges**: Binance, Bybit, OKX, Bitget, BingX, MEXC, Gate.io, Hyperliquid, Hibachi
+- **13 Supported Exchanges**: Binance, Bybit, OKX, Bitget, BingX, MEXC, Gate.io, Hyperliquid, Hibachi, Pacifica, Lighter, Backpack, Drift
 - **Direct API Integration**: Uses native exchange APIs instead of CCXT for maximum data coverage
 - **Arbitrage Analysis**: Finds funding rate arbitrage opportunities between exchanges
 - **Volume Filtering**: Filters out illiquid markets based on 24h trading volume
@@ -16,18 +16,22 @@ A powerful tool for collecting and analyzing funding rates across multiple crypt
 
 ## 📊 Data Coverage
 
-| Exchange | Markets | Funding Rates | Volume Data | API Type |
-|----------|---------|---------------|-------------|----------|
-| Binance | 667 | 620 | ✅ | Direct |
-| Bybit | 645 | 557 | ✅ | Direct |
-| OKX | 257 | 257 | ✅ | Direct |
-| Bitget | 532 | 532 | ✅ | Direct |
-| BingX | 613 | 553 | ✅ | Direct |
-| MEXC | 837 | 750 | ✅ | Direct |
-| Gate.io | 601 | 601 | ✅ | Direct |
-| Hyperliquid | 225 | 225 | ✅ | Direct |
-| Hibachi | 14 | 14 | ❌ | CCXT |
-| **Total** | **4391** | **4109** | **98%** | - |
+| Exchange | Markets | Funding Rates | Volume Data | Prices | Max Order | API Type |
+|----------|---------|---------------|-------------|--------|-----------|----------|
+| Binance | 667 | 620 | ✅ | ✅ | ✅ | Direct |
+| Bybit | 645 | 557 | ✅ | ✅ | ✅ | Direct |
+| OKX | 257 | 257 | ✅ | ✅ | ✅ | Direct |
+| Bitget | 532 | 532 | ✅ | ✅ | ✅ | Direct |
+| BingX | 613 | 553 | ✅ | ✅ | ❌ | Direct |
+| MEXC | 837 | 750 | ✅ | ✅ | ✅ | Direct |
+| Gate.io | 601 | 601 | ✅ | ✅ | ✅ | Direct |
+| Hyperliquid | 225 | 225 | ✅ | ✅ | ❌ | Direct |
+| Hibachi | 14 | 14 | ❌ | ❌ | ❌ | CCXT |
+| **Pacifica** | 49 | 49 | ✅ | ✅ | ✅ | Direct |
+| **Lighter** | 125 | 125 | ❌ | ❌ | ❌ | Direct |
+| **Backpack** | 72 | 72 | ✅ | ✅ | ✅ | Direct |
+| **Drift** | 85 | 70 | ✅ | ✅ | ❌ | Direct |
+| **Total** | **4722** | **4425** | **92%** | **92%** | **69%** | - |
 
 ## 📦 Installation
 

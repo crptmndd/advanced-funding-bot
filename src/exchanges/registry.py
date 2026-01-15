@@ -14,6 +14,10 @@ from src.exchanges.direct import (
     MEXCDirectExchange,
     HyperliquidDirectExchange,
     GateDirectExchange,
+    PacificaDirectExchange,
+    LighterDirectExchange,
+    BackpackDirectExchange,
+    DriftDirectExchange,
 )
 
 # CCXT-based exchanges (for exchanges without direct API implementation)
@@ -41,6 +45,10 @@ class ExchangeRegistry:
         "mexc": MEXCDirectExchange,
         "gate": GateDirectExchange,
         "hyperliquid": HyperliquidDirectExchange,
+        "pacifica": PacificaDirectExchange,
+        "lighter": LighterDirectExchange,
+        "backpack": BackpackDirectExchange,
+        "drift": DriftDirectExchange,
         # CCXT-based (no direct API implementation yet)
         "hibachi": HibachiExchange,
     }
