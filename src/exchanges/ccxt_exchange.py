@@ -639,6 +639,9 @@ class HibachiExchange(CCXTExchange):
     Hibachi DEX connector.
     Hibachi is a decentralized perpetual exchange supported by CCXT.
     See: https://docs.ccxt.com/exchanges/hibachi
+    
+    Note: Hibachi doesn't support fetchTickers, so we fetch ticker individually
+    for each symbol to get mark price and volume data.
     """
     
     ccxt_class = ccxt.hibachi
@@ -647,3 +650,124 @@ class HibachiExchange(CCXTExchange):
     default_options = {
         "defaultType": "swap",
     }
+    
+    async def fetch_funding_rates(self) -> ExchangeFundingRates:
+        """Fetch all funding rates from Hibachi with mark prices and volumes."""
+        exchange = await self._get_exchange()
+        result = ExchangeFundingRates(exchange=self.name)
+        
+        try:
+            # Load markets
+            await exchange.load_markets()
+            
+            # Get all perpetual swap markets
+            swap_markets = []
+            market_info = {}
+            for symbol, market in exchange.markets.items():
+                is_swap = market.get("swap") or market.get("type") == "swap"
+                is_linear = market.get("linear", True)
+                is_active = market.get("active", True)
+                
+                if is_swap and is_linear and is_active:
+                    swap_markets.append(symbol)
+                    market_info[symbol] = market
+            
+            self._logger.info(
+                f"[bold blue]{self.display_name}[/]: Found {len(swap_markets)} perpetual markets"
+            )
+            
+            if not swap_markets:
+                return result
+            
+            # Fetch funding rates and tickers individually
+            # (Hibachi doesn't support batch fetching)
+            semaphore = asyncio.Semaphore(3)  # Limit concurrent requests
+            
+            async def fetch_single(symbol: str):
+                async with semaphore:
+                    try:
+                        # Get funding rate
+                        fr_data = await exchange.fetch_funding_rate(symbol)
+                        
+                        # Get ticker for price and volume
+                        ticker = None
+                        try:
+                            ticker = await exchange.fetch_ticker(symbol)
+                        except Exception:
+                            pass
+                        
+                        # Parse funding rate
+                        funding_rate = fr_data.get("fundingRate")
+                        if funding_rate is None:
+                            return None
+                        
+                        # Get next funding time
+                        next_funding_time = None
+                        next_ts = fr_data.get("nextFundingTimestamp")
+                        if next_ts:
+                            try:
+                                next_funding_time = datetime.utcfromtimestamp(next_ts / 1000)
+                            except:
+                                pass
+                        if next_funding_time is None:
+                            next_funding_time = calculate_next_funding_time(8)
+                        
+                        # Get mark price from ticker (funding rate doesn't include it)
+                        mark_price = None
+                        index_price = None
+                        volume_24h = None
+                        
+                        if ticker:
+                            # Mark price from ticker
+                            mark_price = ticker.get("markPrice") or ticker.get("last")
+                            index_price = ticker.get("indexPrice")
+                            # Volume in quote currency (USDT)
+                            volume_24h = ticker.get("quoteVolume")
+                        
+                        # Get max order from market limits
+                        max_order_value = None
+                        mkt = market_info.get(symbol, {})
+                        limits = mkt.get("limits", {})
+                        cost_limits = limits.get("cost", {})
+                        max_cost = cost_limits.get("max")
+                        if max_cost:
+                            try:
+                                max_order_value = float(max_cost)
+                            except:
+                                pass
+                        
+                        return FundingRateData(
+                            symbol=symbol,
+                            exchange=self.name,
+                            funding_rate=funding_rate,
+                            funding_rate_percent=funding_rate * 100,
+                            next_funding_time=next_funding_time,
+                            mark_price=mark_price,
+                            index_price=index_price,
+                            interval_hours=8,
+                            volume_24h=volume_24h,
+                            open_interest=None,
+                            max_order_value=max_order_value,
+                            max_leverage=None,
+                        )
+                    except Exception as e:
+                        self._logger.debug(f"Failed to fetch {symbol}: {e}")
+                        return None
+            
+            # Fetch all symbols
+            tasks = [fetch_single(symbol) for symbol in swap_markets]
+            rates = await asyncio.gather(*tasks)
+            result.rates = [r for r in rates if r is not None]
+            
+            self._logger.info(
+                f"[bold green]{self.display_name}[/]: "
+                f"Fetched {len(result.rates)} funding rates (individual)"
+            )
+            
+        except Exception as e:
+            result.error = str(e)
+            self._logger.error(f"[bold red]{self.display_name}[/]: Error - {e}")
+        finally:
+            await self.close()
+        
+        return result

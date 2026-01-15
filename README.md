@@ -26,7 +26,7 @@ A powerful tool for collecting and analyzing funding rates across multiple crypt
 | MEXC | 837 | 750 | ✅ | ✅ | ✅ | Direct |
 | Gate.io | 601 | 601 | ✅ | ✅ | ✅ | Direct |
 | Hyperliquid | 225 | 225 | ✅ | ✅ | ❌ | Direct |
-| Hibachi | 14 | 14 | ❌ | ❌ | ❌ | CCXT |
+| Hibachi | 14 | 14 | ✅ | ✅ | ❌ | CCXT |
 | **Pacifica** | 49 | 49 | ✅ | ✅ | ✅ | Direct |
 | **Lighter** | 125 | 125 | ❌ | ❌ | ❌ | Direct |
 | **Backpack** | 72 | 72 | ✅ | ✅ | ✅ | Direct |
