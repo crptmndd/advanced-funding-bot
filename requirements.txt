@@ -3,6 +3,7 @@ aiohttp>=3.9.0
 python-dotenv>=1.0.0
 pydantic>=2.5.0
 rich>=13.7.0
+python-telegram-bot>=21.0
 # Note: aiodns is intentionally excluded as it can cause DNS resolution issues
 # aiohttp will use the system DNS resolver instead
 

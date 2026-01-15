@@ -12,6 +12,7 @@ A powerful tool for collecting and analyzing funding rates across multiple crypt
 - **Real-time Funding Rates**: Get current funding rates with mark prices
 - **Annualized Rate Calculation**: Automatically calculates annualized funding rates
 - **CLI Interface**: Easy-to-use command-line interface with rich formatting
+- **Telegram Bot**: Interactive bot for funding rates and arbitrage analysis
 - **Verbose Mode**: Detailed logging for debugging (`-v` flag)
 
 ## 📊 Data Coverage
@@ -113,6 +114,65 @@ python -m src.main --arbitrage -v
 python -m src.main --output funding_rates.json
 ```
 
+## 🤖 Telegram Bot
+
+Run the interactive Telegram bot to get funding rates and arbitrage opportunities directly in Telegram.
+
+### Setup
+
+1. **Get Bot Token from @BotFather:**
+   - Open Telegram and search for `@BotFather`
+   - Send `/newbot` command
+   - Follow instructions to create your bot
+   - Copy the bot token
+
+2. **Set Token:**
+   ```bash
+   # Option 1: Environment variable
+   export TELEGRAM_BOT_TOKEN=your_token_here
+   
+   # Option 2: Create .env file
+   echo "TELEGRAM_BOT_TOKEN=your_token_here" > .env
+   ```
+
+3. **Run the Bot:**
+   ```bash
+   python -m src.bot_main
+   
+   # Or with token as argument
+   python -m src.bot_main YOUR_BOT_TOKEN
+   ```
+
+### Bot Commands
+
+| Command | Description | Example |
+|---------|-------------|---------|
+| `/start` | Welcome message | `/start` |
+| `/help` | Show all commands | `/help` |
+| `/rates` | Get funding rates | `/rates`, `/rates binance`, `/rates 20` |
+| `/arbitrage` | Find arbitrage opportunities | `/arbitrage`, `/arbitrage 15` |
+| `/exchanges` | List available exchanges | `/exchanges` |
+
+### Examples
+
+```
+/rates              # All exchanges, top 10
+/rates binance      # Only Binance
+/rates binance 20   # Binance, top 20
+/rates binance bybit okx  # Multiple exchanges
+
+/arbitrage          # Find opportunities, top 10
+/arbitrage 20       # Find opportunities, top 20
+```
+
+### Bot Features
+
+- 📊 **Funding Rates**: View top positive/negative rates
+- 💰 **Arbitrage**: Find spread opportunities between exchanges
+- 📈 **Mark Price & Volume**: See prices and 24h volumes
+- 🎯 **Max Order Limits**: Know position size limits
+- ⏰ **Next Funding Time**: Countdown to next funding
+
 ## 💰 Arbitrage Strategy
 
 The arbitrage analyzer finds opportunities to profit from funding rate differences:
@@ -139,33 +199,28 @@ funding-bot/
 │   ├── __init__.py
 │   ├── __main__.py
 │   ├── main.py                 # CLI entry point
+│   ├── bot_main.py             # Telegram bot entry point
+│   ├── bot/                    # Telegram bot module
+│   │   ├── __init__.py
+│   │   ├── bot.py              # Bot handlers and logic
+│   │   └── formatters.py       # Message formatting
 │   ├── models/
 │   │   ├── __init__.py
-│   │   └── funding_rate.py     # Data models (FundingRateData, ArbitrageOpportunity)
+│   │   └── funding_rate.py     # Data models
 │   ├── services/
 │   │   ├── __init__.py
-│   │   └── arbitrage_analyzer.py  # Arbitrage analysis service
+│   │   └── arbitrage_analyzer.py  # Arbitrage analysis
 │   ├── exchanges/
 │   │   ├── __init__.py
 │   │   ├── base.py             # Base exchange class
 │   │   ├── registry.py         # Exchange registry
 │   │   ├── ccxt_exchange.py    # CCXT-based connectors
-│   │   └── direct/             # Direct API connectors
-│   │       ├── __init__.py
-│   │       ├── base.py         # Base direct API class
-│   │       ├── binance.py      # Binance Futures API
-│   │       ├── bybit.py        # Bybit V5 API
-│   │       ├── okx.py          # OKX API
-│   │       ├── bitget.py       # Bitget API
-│   │       ├── bingx.py        # BingX API
-│   │       ├── mexc.py         # MEXC Futures API
-│   │       ├── gate.py         # Gate.io API
-│   │       └── hyperliquid.py  # Hyperliquid DEX API
+│   │   └── direct/             # Direct API connectors (13 exchanges)
 │   └── utils/
 │       ├── __init__.py
 │       └── logger.py           # Logging utilities
 ├── requirements.txt
-├── .gitignore
+├── .env.example                # Environment variables template
 └── README.md
 ```
 
@@ -199,7 +254,8 @@ Benefits of direct API:
 
 ## 📈 Future Plans
 
-- [ ] Telegram bot interface with subscription system
+- [x] ~~Telegram bot interface~~ ✅ Implemented!
+- [ ] Subscription system for premium features
 - [ ] Internal EVM wallet for automated arbitrage
 - [ ] Automated position opening/closing
 - [ ] Historical funding rate analysis
