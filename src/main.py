@@ -13,8 +13,14 @@ Usage:
     # Show only top N rates
     python -m src.main --top 20
     
+    # Analyze arbitrage opportunities
+    python -m src.main --arbitrage
+    
     # List available exchanges
     python -m src.main --list-exchanges
+    
+    # Verbose output for debugging
+    python -m src.main -v
 """
 
 import argparse
@@ -28,7 +34,9 @@ from rich.table import Table
 from rich.panel import Panel
 
 from src.exchanges import ExchangeRegistry, get_exchange, get_all_exchanges
-from src.models import FundingRateData, ExchangeFundingRates
+from src.models import FundingRateData, ExchangeFundingRates, ArbitrageOpportunity
+from src.services import ArbitrageAnalyzer
+from src.services.arbitrage_analyzer import AnalyzerConfig
 from src.utils import setup_logger, get_logger
 
 
@@ -59,13 +67,66 @@ def format_funding_time(dt: Optional[datetime]) -> str:
     return dt.strftime("%H:%M UTC")
 
 
+def format_price(price: Optional[float]) -> str:
+    """
+    Format price with appropriate precision.
+    
+    Shows significant digits based on price magnitude:
+    - >= 10000: no decimals ($12,345)
+    - >= 1000: 1 decimal ($1,234.5)
+    - >= 100: 2 decimals ($123.45)
+    - >= 1: 2-4 decimals ($1.23, $12.34)
+    - >= 0.01: 4 decimals ($0.0123)
+    - < 0.01: up to 8 significant digits ($0.00001234)
+    """
+    if price is None or price == 0:
+        return "N/A"
+    
+    abs_price = abs(price)
+    
+    if abs_price >= 10000:
+        return f"${price:,.0f}"
+    elif abs_price >= 1000:
+        return f"${price:,.1f}"
+    elif abs_price >= 100:
+        return f"${price:,.2f}"
+    elif abs_price >= 10:
+        return f"${price:,.3f}"
+    elif abs_price >= 1:
+        return f"${price:,.4f}"
+    elif abs_price >= 0.01:
+        return f"${price:.4f}"
+    elif abs_price >= 0.0001:
+        return f"${price:.6f}"
+    elif abs_price >= 0.000001:
+        return f"${price:.8f}"
+    else:
+        # Very small prices - show in scientific notation or full
+        return f"${price:.10f}".rstrip('0').rstrip('.')
+
+
+def format_volume(volume: Optional[float]) -> str:
+    """Format volume in human-readable format."""
+    if volume is None or volume == 0:
+        return "N/A"
+    
+    if volume >= 1_000_000_000:
+        return f"${volume / 1_000_000_000:.1f}B"
+    elif volume >= 1_000_000:
+        return f"${volume / 1_000_000:.1f}M"
+    elif volume >= 1_000:
+        return f"${volume / 1_000:.0f}K"
+    else:
+        return f"${volume:.0f}"
+
+
 console = Console()
 
 
 def create_parser() -> argparse.ArgumentParser:
     """Create command line argument parser."""
     parser = argparse.ArgumentParser(
-        description="Fetch funding rates from cryptocurrency exchanges",
+        description="Fetch funding rates from cryptocurrency exchanges and find arbitrage opportunities",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -73,8 +134,10 @@ Examples:
   %(prog)s -e bybit okx             # Fetch from Bybit and OKX only
   %(prog)s --exchanges gate mexc    # Fetch from Gate.io and MEXC
   %(prog)s --top 10                 # Show top 10 positive and negative rates
+  %(prog)s --arbitrage              # Show arbitrage opportunities
+  %(prog)s --arbitrage --top 20     # Show top 20 arbitrage opportunities
   %(prog)s --list-exchanges         # List all available exchanges
-  %(prog)s -v                       # Verbose output
+  %(prog)s -v                       # Verbose output for debugging
         """
     )
     
@@ -90,7 +153,7 @@ Examples:
         type=int,
         default=10,
         metavar="N",
-        help="Number of top positive/negative rates to display (default: 10)",
+        help="Number of top results to display (default: 10)",
     )
     
     parser.add_argument(
@@ -108,7 +171,7 @@ Examples:
     parser.add_argument(
         "-v", "--verbose",
         action="store_true",
-        help="Enable verbose output",
+        help="Enable verbose output for debugging",
     )
     
     parser.add_argument(
@@ -116,6 +179,37 @@ Examples:
         type=str,
         metavar="SYMBOL",
         help="Fetch funding rate for specific symbol only (e.g., BTC/USDT:USDT)",
+    )
+    
+    # Arbitrage options
+    parser.add_argument(
+        "--arbitrage", "-a",
+        action="store_true",
+        help="Show arbitrage opportunities between exchanges",
+    )
+    
+    parser.add_argument(
+        "--min-spread",
+        type=float,
+        default=0.01,
+        metavar="PERCENT",
+        help="Minimum funding spread for arbitrage (default: 0.01%%)",
+    )
+    
+    parser.add_argument(
+        "--max-price-spread",
+        type=float,
+        default=1.0,
+        metavar="PERCENT",
+        help="Maximum price spread between exchanges (default: 1.0%%)",
+    )
+    
+    parser.add_argument(
+        "--min-volume",
+        type=float,
+        default=100000,
+        metavar="USD",
+        help="Minimum 24h volume required (default: $100,000)",
     )
     
     return parser
@@ -144,6 +238,7 @@ def list_exchanges() -> None:
 def display_funding_rates(
     all_rates: List[ExchangeFundingRates],
     top_n: int = 10,
+    verbose: bool = False,
 ) -> None:
     """Display funding rates in a formatted table."""
     # Collect all rates
@@ -155,6 +250,12 @@ def display_funding_rates(
     if not combined_rates:
         console.print("[yellow]No funding rates fetched.[/]")
         return
+    
+    # Calculate stats for verbose output
+    if verbose:
+        rates_with_volume = sum(1 for r in combined_rates if r.volume_24h and r.volume_24h > 0)
+        rates_with_price = sum(1 for r in combined_rates if r.mark_price and r.mark_price > 0)
+        console.print(f"[dim]Stats: {rates_with_volume}/{len(combined_rates)} rates with volume, {rates_with_price}/{len(combined_rates)} with price[/]")
     
     # Summary panel
     summary = Panel(
@@ -183,18 +284,22 @@ def display_funding_rates(
         table_positive.add_column("Annualized", justify="right", style="red")
         table_positive.add_column("Next Funding", justify="right", style="yellow")
         table_positive.add_column("Mark Price", justify="right")
+        if verbose:
+            table_positive.add_column("24h Volume", justify="right", style="dim")
         
         for rate in positive:
-            mark_price = f"${rate.mark_price:,.2f}" if rate.mark_price else "N/A"
             next_funding = format_time_until(rate.next_funding_time)
-            table_positive.add_row(
+            row = [
                 rate.symbol,
                 rate.exchange,
                 f"{rate.funding_rate_percent:+.4f}%",
                 f"{rate.annualized_rate:+.1f}%",
                 next_funding,
-                mark_price,
-            )
+                format_price(rate.mark_price),
+            ]
+            if verbose:
+                row.append(format_volume(rate.volume_24h))
+            table_positive.add_row(*row)
         
         console.print(table_positive)
     
@@ -216,20 +321,110 @@ def display_funding_rates(
         table_negative.add_column("Annualized", justify="right", style="green")
         table_negative.add_column("Next Funding", justify="right", style="yellow")
         table_negative.add_column("Mark Price", justify="right")
+        if verbose:
+            table_negative.add_column("24h Volume", justify="right", style="dim")
         
         for rate in negative:
-            mark_price = f"${rate.mark_price:,.2f}" if rate.mark_price else "N/A"
             next_funding = format_time_until(rate.next_funding_time)
-            table_negative.add_row(
+            row = [
                 rate.symbol,
                 rate.exchange,
                 f"{rate.funding_rate_percent:+.4f}%",
                 f"{rate.annualized_rate:+.1f}%",
                 next_funding,
-                mark_price,
-            )
+                format_price(rate.mark_price),
+            ]
+            if verbose:
+                row.append(format_volume(rate.volume_24h))
+            table_negative.add_row(*row)
         
         console.print(table_negative)
+
+
+def display_arbitrage_opportunities(
+    opportunities: List[ArbitrageOpportunity],
+    top_n: int = 10,
+    verbose: bool = False,
+) -> None:
+    """Display arbitrage opportunities in a formatted table."""
+    if not opportunities:
+        console.print("[yellow]No arbitrage opportunities found matching criteria.[/]")
+        return
+    
+    # Take top N
+    top_opportunities = opportunities[:top_n]
+    
+    # Summary
+    summary = Panel(
+        f"[bold]Found {len(opportunities)} arbitrage opportunities[/]\n"
+        f"Showing top {len(top_opportunities)} by quality score",
+        title="💰 Arbitrage Analysis",
+        border_style="green",
+    )
+    console.print(summary)
+    
+    # Main opportunities table
+    table = Table(
+        title=f"🎯 Top {len(top_opportunities)} Funding Rate Arbitrage Opportunities",
+        show_header=True,
+        header_style="bold magenta",
+    )
+    table.add_column("Symbol", style="cyan", min_width=10)
+    table.add_column("Long (Receive)", style="green", min_width=18)
+    table.add_column("Short (Receive)", style="red", min_width=18)
+    table.add_column("Spread", justify="right", style="bold yellow")
+    table.add_column("Annual", justify="right", style="yellow")
+    table.add_column("Price Δ", justify="right")
+    table.add_column("Min Vol", justify="right", style="dim")
+    table.add_column("Time", justify="right", style="dim")
+    if verbose:
+        table.add_column("Score", justify="right", style="dim")
+    
+    for opp in top_opportunities:
+        # Format long position
+        long_info = f"{opp.long_exchange}\n{opp.long_funding_rate:+.4f}%"
+        
+        # Format short position
+        short_info = f"{opp.short_exchange}\n{opp.short_funding_rate:+.4f}%"
+        
+        # Price spread color based on value
+        if opp.price_spread_percent < 0.1:
+            price_color = "green"
+        elif opp.price_spread_percent < 0.5:
+            price_color = "yellow"
+        else:
+            price_color = "red"
+        
+        row = [
+            opp.symbol,
+            long_info,
+            short_info,
+            f"{opp.funding_spread:.4f}%",
+            f"{opp.annualized_spread:.1f}%",
+            f"[{price_color}]{opp.price_spread_percent:.3f}%[/]",
+            format_volume(opp.min_volume_24h),
+            f"{opp.time_to_funding_hours:.1f}h",
+        ]
+        if verbose:
+            row.append(f"{opp.quality_score:.1f}")
+        
+        table.add_row(*row)
+    
+    console.print(table)
+    
+    # Legend
+    console.print("\n[dim]Strategy: Long on first exchange (lower funding), Short on second exchange (higher funding)[/]")
+    console.print("[dim]Spread = Short funding - Long funding (profit per funding period)[/]")
+    
+    if verbose and opportunities:
+        # Show detailed breakdown of top opportunity
+        top = opportunities[0]
+        console.print(f"\n[bold]Top Opportunity Details ({top.symbol}):[/]")
+        console.print(f"  Long {top.long_exchange}: {top.long_funding_rate:+.4f}% @ {format_price(top.long_mark_price)}")
+        console.print(f"  Short {top.short_exchange}: {top.short_funding_rate:+.4f}% @ {format_price(top.short_mark_price)}")
+        console.print(f"  Funding Spread: {top.funding_spread:.4f}% per period")
+        console.print(f"  Daily Profit: ~{top.daily_spread:.4f}%")
+        console.print(f"  Annualized: ~{top.annualized_spread:.1f}%")
 
 
 def display_errors(all_rates: List[ExchangeFundingRates]) -> None:
@@ -246,6 +441,7 @@ async def fetch_from_exchanges(
     exchange_names: Optional[List[str]] = None,
     include_unavailable: bool = False,
     symbol: Optional[str] = None,
+    verbose: bool = False,
 ) -> List[ExchangeFundingRates]:
     """
     Fetch funding rates from specified exchanges.
@@ -254,6 +450,7 @@ async def fetch_from_exchanges(
         exchange_names: List of exchange names, or None for all
         include_unavailable: Include exchanges without working API
         symbol: Specific symbol to fetch, or None for all
+        verbose: Enable verbose logging
         
     Returns:
         List of ExchangeFundingRates for each exchange
@@ -278,13 +475,25 @@ async def fetch_from_exchanges(
     
     logger.info(f"[bold]Fetching funding rates from {len(exchanges)} exchanges...[/]")
     
+    if verbose:
+        logger.info(f"[dim]Exchanges: {', '.join(exchanges.keys())}[/]")
+    
     # Fetch from all exchanges concurrently
     async def fetch_single(name: str, exchange):
         try:
+            if verbose:
+                logger.debug(f"[dim]Starting fetch from {name}...[/]")
+            
             if symbol:
-                return await exchange.fetch_funding_rate(symbol)
+                result = await exchange.fetch_funding_rate(symbol)
             else:
-                return await exchange.fetch_funding_rates()
+                result = await exchange.fetch_funding_rates()
+            
+            if verbose and result.success:
+                rates_with_vol = sum(1 for r in result.rates if r.volume_24h)
+                logger.debug(f"[dim]{name}: {len(result.rates)} rates, {rates_with_vol} with volume[/]")
+            
+            return result
         except Exception as e:
             logger.error(f"[red]{name}:[/] {e}")
             return ExchangeFundingRates(exchange=name, error=str(e))
@@ -305,6 +514,8 @@ async def main_async(args: argparse.Namespace) -> int:
     log_level = logging.DEBUG if args.verbose else logging.INFO
     setup_logger(level=log_level)
     
+    logger = get_logger()
+    
     # List exchanges and exit if requested
     if args.list_exchanges:
         list_exchanges()
@@ -315,12 +526,44 @@ async def main_async(args: argparse.Namespace) -> int:
         exchange_names=args.exchanges,
         include_unavailable=args.all_exchanges,
         symbol=args.symbol,
+        verbose=args.verbose,
     )
     
-    # Display results
-    if results:
-        display_funding_rates(results, top_n=args.top)
-        display_errors(results)
+    if not results:
+        return 1
+    
+    # Analyze arbitrage if requested
+    if args.arbitrage:
+        if args.verbose:
+            logger.info("[dim]Running arbitrage analysis...[/]")
+        
+        config = AnalyzerConfig(
+            min_funding_spread=args.min_spread,
+            max_price_spread=args.max_price_spread,
+            min_volume_24h=args.min_volume,
+        )
+        
+        analyzer = ArbitrageAnalyzer(config)
+        
+        # Get stats
+        if args.verbose:
+            stats = analyzer.get_stats(results)
+            logger.info(
+                f"[dim]Analysis stats: {stats['total_rates']} rates, "
+                f"{stats['unique_symbols']} symbols, "
+                f"{stats['multi_exchange_symbols']} on 2+ exchanges[/]"
+            )
+        
+        # Find opportunities
+        opportunities = analyzer.analyze(results, verbose=args.verbose)
+        
+        # Display opportunities
+        display_arbitrage_opportunities(opportunities, top_n=args.top, verbose=args.verbose)
+    else:
+        # Display regular funding rates
+        display_funding_rates(results, top_n=args.top, verbose=args.verbose)
+    
+    display_errors(results)
     
     return 0
 
@@ -339,4 +582,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-

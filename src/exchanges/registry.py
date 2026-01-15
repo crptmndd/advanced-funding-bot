@@ -3,17 +3,21 @@
 from typing import Dict, List, Optional, Type
 
 from src.exchanges.base import BaseExchange
-from src.exchanges.ccxt_exchange import (
-    BybitExchange,
-    MexcExchange,
-    OKXExchange,
-    BitgetExchange,
-    BingXExchange,
-    BinanceExchange,
-    HibachiExchange,
+
+# Direct API exchanges (native API, maximum data)
+from src.exchanges.direct import (
+    BinanceDirectExchange,
+    BybitDirectExchange,
+    OKXDirectExchange,
+    BitgetDirectExchange,
+    BingXDirectExchange,
+    MEXCDirectExchange,
+    HyperliquidDirectExchange,
+    GateDirectExchange,
 )
-from src.exchanges.hyperliquid import HyperliquidExchange
-from src.exchanges.gate_direct import GateDirectExchange
+
+# CCXT-based exchanges (for exchanges without direct API implementation)
+from src.exchanges.ccxt_exchange import HibachiExchange
 
 
 class ExchangeRegistry:
@@ -21,18 +25,23 @@ class ExchangeRegistry:
     Registry of all available exchange connectors.
     
     Provides centralized access to exchange classes and instances.
+    
+    Uses direct API implementations where available for maximum
+    data coverage, with CCXT as fallback for other exchanges.
     """
     
     # All registered exchange classes
+    # Direct API implementations (native APIs - more data)
     _exchanges: Dict[str, Type[BaseExchange]] = {
-        "binance": BinanceExchange,
-        "bybit": BybitExchange,
-        "gate": GateDirectExchange,  # Using direct API to avoid CCXT issues
-        "mexc": MexcExchange,
-        "okx": OKXExchange,
-        "bitget": BitgetExchange,
-        "bingx": BingXExchange,
-        "hyperliquid": HyperliquidExchange,
+        "binance": BinanceDirectExchange,
+        "bybit": BybitDirectExchange,
+        "okx": OKXDirectExchange,
+        "bitget": BitgetDirectExchange,
+        "bingx": BingXDirectExchange,
+        "mexc": MEXCDirectExchange,
+        "gate": GateDirectExchange,
+        "hyperliquid": HyperliquidDirectExchange,
+        # CCXT-based (no direct API implementation yet)
         "hibachi": HibachiExchange,
     }
     
@@ -149,4 +158,3 @@ def get_exchange(name: str, **kwargs) -> Optional[BaseExchange]:
 def get_all_exchanges(only_available: bool = True) -> Dict[str, BaseExchange]:
     """Get all registered exchange instances."""
     return ExchangeRegistry.get_all_exchanges(only_available=only_available)
-

@@ -1,177 +1,207 @@
 # Funding Rate Arbitrage Bot
 
-Софт для получения данных по фандинг рейтам с различных криптовалютных бирж. Первый этап большого проекта по арбитражу фандинг рейтов.
+A powerful tool for collecting and analyzing funding rates across multiple cryptocurrency exchanges to find arbitrage opportunities. Built with Python using direct native API integrations for maximum data coverage.
 
-## Поддерживаемые биржи
+## 🚀 Features
 
-| Биржа | Статус | Тип | Кол-во рынков |
-|-------|--------|-----|---------------|
-| Binance | ✅ Работает | CEX | ~580 |
-| Bybit | ✅ Работает | CEX | ~610 |
-| Gate.io | ✅ Работает | CEX | ~600 |
-| MEXC | ✅ Работает | CEX | ~820 |
-| OKX | ✅ Работает | CEX | ~260 |
-| Bitget | ✅ Работает | CEX | ~590 |
-| BingX | ✅ Работает | CEX | ~570 |
-| Hyperliquid | ✅ Работает | DEX | ~240 |
-| Hibachi | ✅ Работает | DEX | ~14 |
+- **9 Supported Exchanges**: Binance, Bybit, OKX, Bitget, BingX, MEXC, Gate.io, Hyperliquid, Hibachi
+- **Direct API Integration**: Uses native exchange APIs instead of CCXT for maximum data coverage
+- **Arbitrage Analysis**: Finds funding rate arbitrage opportunities between exchanges
+- **Volume Filtering**: Filters out illiquid markets based on 24h trading volume
+- **Price Spread Analysis**: Excludes opportunities with high price differences between exchanges
+- **Real-time Funding Rates**: Get current funding rates with mark prices
+- **Annualized Rate Calculation**: Automatically calculates annualized funding rates
+- **CLI Interface**: Easy-to-use command-line interface with rich formatting
+- **Verbose Mode**: Detailed logging for debugging (`-v` flag)
 
-**Всего:** 9 бирж, ~3000+ фандинг рейтов
+## 📊 Data Coverage
 
-## Установка
+| Exchange | Markets | Funding Rates | Volume Data | API Type |
+|----------|---------|---------------|-------------|----------|
+| Binance | 667 | 620 | ✅ | Direct |
+| Bybit | 645 | 557 | ✅ | Direct |
+| OKX | 257 | 257 | ✅ | Direct |
+| Bitget | 532 | 532 | ✅ | Direct |
+| BingX | 613 | 553 | ✅ | Direct |
+| MEXC | 837 | 750 | ✅ | Direct |
+| Gate.io | 601 | 601 | ✅ | Direct |
+| Hyperliquid | 225 | 225 | ✅ | Direct |
+| Hibachi | 14 | 14 | ❌ | CCXT |
+| **Total** | **4391** | **4109** | **98%** | - |
+
+## 📦 Installation
 
 ```bash
-# Клонирование репозитория
-git clone <repo-url>
+# Clone the repository
+git clone <repository-url>
 cd funding-bot
 
-# Создание виртуального окружения
+# Create virtual environment
 python -m venv venv
-source venv/bin/activate  # Linux/Mac
-# или
-venv\Scripts\activate  # Windows
+source venv/bin/activate  # On Windows: venv\Scripts\activate
 
-# Установка зависимостей
+# Install dependencies
 pip install -r requirements.txt
 ```
 
-## Использование
+## 🔧 Usage
 
-### Получение данных со всех бирж
-
-```bash
-python -m src.main
-```
-
-### Получение данных с конкретных бирж
-
-```bash
-python -m src.main -e bybit okx gate binance
-# или
-python -m src.main --exchanges bybit mexc bitget
-```
-
-### Показать топ N рейтов
-
-```bash
-python -m src.main --top 20
-```
-
-### Список доступных бирж
+### List Available Exchanges
 
 ```bash
 python -m src.main --list-exchanges
 ```
 
-### Получить фандинг для конкретного символа
+### Fetch All Funding Rates
 
 ```bash
-python -m src.main --symbol "BTC/USDT:USDT"
+python -m src.main
 ```
 
-### Verbose режим
+### Fetch from Specific Exchanges
+
+```bash
+# Single exchange
+python -m src.main --exchanges binance
+
+# Multiple exchanges
+python -m src.main --exchanges binance bybit okx
+```
+
+### 🎯 Arbitrage Analysis (NEW!)
+
+Find funding rate arbitrage opportunities between exchanges:
+
+```bash
+# Basic arbitrage analysis
+python -m src.main --arbitrage
+
+# Show top 20 opportunities
+python -m src.main --arbitrage --top 20
+
+# Custom filters
+python -m src.main --arbitrage --min-spread 0.05 --max-price-spread 0.5 --min-volume 500000
+
+# With verbose output
+python -m src.main --arbitrage -v
+```
+
+### Arbitrage Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--min-spread` | 0.01% | Minimum funding spread to consider |
+| `--max-price-spread` | 1.0% | Maximum price difference between exchanges |
+| `--min-volume` | $100,000 | Minimum 24h trading volume |
+
+### Verbose Mode
+
+Enable detailed logging for debugging:
 
 ```bash
 python -m src.main -v
+python -m src.main --arbitrage -v
 ```
 
-## Структура проекта
+### Export to JSON
+
+```bash
+python -m src.main --output funding_rates.json
+```
+
+## 💰 Arbitrage Strategy
+
+The arbitrage analyzer finds opportunities to profit from funding rate differences:
+
+1. **Long Position** on exchange with **lower/negative** funding rate (receive funding)
+2. **Short Position** on exchange with **higher/positive** funding rate (receive funding)
+
+Example output:
+```
+🎯 Top Funding Rate Arbitrage Opportunities
+┌──────────┬──────────────────┬──────────────────┬────────┬─────────┐
+│ Symbol   │ Long (Receive)   │ Short (Receive)  │ Spread │ Annual  │
+├──────────┼──────────────────┼──────────────────┼────────┼─────────┤
+│ KAITO    │ gate -1.4078%    │ binance -0.1561% │ 1.25%  │ 1827.4% │
+│ ICNT     │ bybit -0.6322%   │ gate +0.0012%    │ 0.63%  │ 1232.9% │
+└──────────┴──────────────────┴──────────────────┴────────┴─────────┘
+```
+
+## 📁 Project Structure
 
 ```
 funding-bot/
 ├── src/
 │   ├── __init__.py
 │   ├── __main__.py
-│   ├── main.py              # CLI интерфейс
-│   ├── exchanges/
-│   │   ├── __init__.py
-│   │   ├── base.py          # Базовый класс для бирж
-│   │   ├── ccxt_exchange.py # CCXT реализации (Binance, Bybit, OKX, etc.)
-│   │   ├── gate_direct.py   # Gate.io через прямой API
-│   │   ├── hyperliquid.py   # Hyperliquid DEX
-│   │   └── registry.py      # Реестр бирж
+│   ├── main.py                 # CLI entry point
 │   ├── models/
 │   │   ├── __init__.py
-│   │   └── funding_rate.py  # Модели данных
+│   │   └── funding_rate.py     # Data models (FundingRateData, ArbitrageOpportunity)
+│   ├── services/
+│   │   ├── __init__.py
+│   │   └── arbitrage_analyzer.py  # Arbitrage analysis service
+│   ├── exchanges/
+│   │   ├── __init__.py
+│   │   ├── base.py             # Base exchange class
+│   │   ├── registry.py         # Exchange registry
+│   │   ├── ccxt_exchange.py    # CCXT-based connectors
+│   │   └── direct/             # Direct API connectors
+│   │       ├── __init__.py
+│   │       ├── base.py         # Base direct API class
+│   │       ├── binance.py      # Binance Futures API
+│   │       ├── bybit.py        # Bybit V5 API
+│   │       ├── okx.py          # OKX API
+│   │       ├── bitget.py       # Bitget API
+│   │       ├── bingx.py        # BingX API
+│   │       ├── mexc.py         # MEXC Futures API
+│   │       ├── gate.py         # Gate.io API
+│   │       └── hyperliquid.py  # Hyperliquid DEX API
 │   └── utils/
 │       ├── __init__.py
-│       └── logger.py        # Логирование
+│       └── logger.py           # Logging utilities
 ├── requirements.txt
+├── .gitignore
 └── README.md
 ```
 
-## Пример вывода
+## 🔄 Funding Rate Intervals
 
-```
-╭────────────────────────────────── Summary ───────────────────────────────────╮
-│ Total rates collected: 3089 from 9 exchanges                                 │
-╰──────────────────────────────────────────────────────────────────────────────╯
+Different exchanges use different funding intervals:
 
-🔺 Top 5 Positive Funding Rates (Long pays Short)
-┏━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┓
-┃ Symbol          ┃ Exchange     ┃ Rate (%) ┃ Annualized (%) ┃ Mark Price ┃
-┡━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━┩
-│ FLOW/USDT:USDT  │ gate         │ +0.5319% │       +582.56% │      $0.10 │
-│ FOGO/USDT:USDT  │ mexc         │ +0.2918% │       +319.52% │      $0.05 │
-│ DAM/USDT:USDT   │ gate         │ +0.2529% │       +277.05% │      $0.03 │
-└─────────────────┴──────────────┴──────────┴────────────────┴────────────┘
+| Exchange | Interval | Times per Day | Annualized Multiplier |
+|----------|----------|---------------|----------------------|
+| Binance | 8 hours | 3x | 1095x |
+| Bybit | 8 hours | 3x | 1095x |
+| OKX | 8 hours | 3x | 1095x |
+| Bitget | 8 hours | 3x | 1095x |
+| BingX | 8 hours | 3x | 1095x |
+| MEXC | 8 hours | 3x | 1095x |
+| Gate.io | 4-8 hours | 3-6x | 1095-2190x |
+| Hyperliquid | 1 hour | 24x | 8760x |
+| Hibachi | 8 hours | 3x | 1095x |
 
-🔻 Top 5 Negative Funding Rates (Short pays Long)
-┏━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┓
-┃ Symbol          ┃ Exchange     ┃ Rate (%) ┃ Annualized (%) ┃ Mark Price ┃
-┡━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━┩
-│ ICNT/USDT:USDT  │ bitget       │ -0.8081% │       -884.87% │      $0.48 │
-│ ICNT/USDT:USDT  │ binance      │ -0.7774% │       -851.25% │      $0.48 │
-│ MOVE/USDT:USDT  │ bitget       │ -0.7087% │       -776.03% │      $0.04 │
-└─────────────────┴──────────────┴──────────┴────────────────┴────────────┘
-```
+## 🛠️ Architecture
 
-## Арбитражные возможности
+The project uses a hybrid approach:
+- **Direct API connectors** for maximum data coverage (preferred)
+- **CCXT as fallback** for exchanges without direct implementation
 
-Софт позволяет находить арбитражные возможности между биржами:
+Benefits of direct API:
+- More markets and funding rates
+- Better price and volume data coverage
+- Faster response times
+- Full control over request parameters
 
-- **Положительный фандинг** (Long платит Short): можно шортить на этой бирже
-- **Отрицательный фандинг** (Short платит Long): можно лонгить на этой бирже
+## 📈 Future Plans
 
-**Пример арбитража:**
-- ICNT/USDT на Bitget: -0.81% (шорты платят)
-- ICNT/USDT на другой бирже: +0.05% (лонги платят)
-- **Спред:** ~0.86% за 8 часов = ~940% годовых потенциальная прибыль
+- [ ] Telegram bot interface with subscription system
+- [ ] Internal EVM wallet for automated arbitrage
+- [ ] Automated position opening/closing
+- [ ] Historical funding rate analysis
+- [ ] Real-time WebSocket updates
+- [ ] Risk management and position sizing
 
-## Roadmap
+## 📄 License
 
-### Фаза 1: Сбор данных ✅
-- [x] Получение фандинг рейтов с 9 бирж (CEX + DEX)
-- [x] CLI интерфейс с аргументами
-- [x] Отображение цен для всех монет
-- [x] Поддержка Binance, Hibachi
-
-### Фаза 2: Аналитика
-- [ ] Автоматический поиск арбитражных возможностей
-- [ ] Расчет потенциальной прибыли с учётом комиссий
-- [ ] Фильтрация по ликвидности
-- [ ] Уведомления о возможностях
-
-### Фаза 3: Телеграм бот
-- [ ] Интеграция с Telegram
-- [ ] Система подписок
-- [ ] Управление настройками через бота
-- [ ] Алерты в реальном времени
-
-### Фаза 4: Автоматизация
-- [ ] Создание EVM кошельков для пользователей
-- [ ] Автоматический вывод средств на биржи
-- [ ] Выполнение арбитражных сделок
-- [ ] Сбор баланса при отсутствии возможностей
-
-## API Документация
-
-Используемые API:
-- CCXT Library: https://docs.ccxt.com
-- Gate.io API v4: https://www.gate.io/docs/developers/apiv4
-- Hibachi: https://docs.ccxt.com/exchanges/hibachi
-- Binance Futures: https://docs.ccxt.com/exchanges/binance
-
-## Лицензия
-
-MIT
+MIT License
