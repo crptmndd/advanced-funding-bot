@@ -21,6 +21,8 @@ class FundingRateData:
     interval_hours: int = 8  # Funding interval in hours (typically 8h)
     volume_24h: Optional[float] = None  # 24h trading volume in quote currency (USDT)
     open_interest: Optional[float] = None  # Open interest in quote currency
+    max_order_value: Optional[float] = None  # Maximum order value in USDT
+    max_leverage: Optional[int] = None  # Maximum leverage allowed
     
     @property
     def annualized_rate(self) -> float:
@@ -107,13 +109,23 @@ class ArbitrageOpportunity:
     short_next_funding: Optional[datetime]
     short_interval_hours: int
     
+    # Order limits
+    long_max_order: Optional[float] = None  # Max order value on long exchange (USDT)
+    short_max_order: Optional[float] = None  # Max order value on short exchange (USDT)
+    
     # Calculated metrics
-    funding_spread: float  # Difference in funding rates (short - long)
-    price_spread_percent: float  # Price difference between exchanges
+    funding_spread: float = 0  # Difference in funding rates (short - long)
+    price_spread_percent: float = 0  # Price difference between exchanges
     
     # Quality metrics
-    min_volume_24h: float  # Minimum volume across both exchanges
-    time_to_funding_hours: float  # Time until next funding (min of both)
+    min_volume_24h: float = 0  # Minimum volume across both exchanges
+    time_to_funding_hours: float = 8  # Time until next funding (min of both)
+    
+    @property
+    def max_position_size(self) -> Optional[float]:
+        """Maximum position size limited by both exchanges."""
+        limits = [l for l in [self.long_max_order, self.short_max_order] if l and l > 0]
+        return min(limits) if limits else None
     
     timestamp: datetime = field(default_factory=datetime.utcnow)
     

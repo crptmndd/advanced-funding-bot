@@ -284,6 +284,7 @@ def display_funding_rates(
         table_positive.add_column("Annualized", justify="right", style="red")
         table_positive.add_column("Next Funding", justify="right", style="yellow")
         table_positive.add_column("Mark Price", justify="right")
+        table_positive.add_column("Max Order", justify="right", style="cyan")
         if verbose:
             table_positive.add_column("24h Volume", justify="right", style="dim")
         
@@ -296,6 +297,7 @@ def display_funding_rates(
                 f"{rate.annualized_rate:+.1f}%",
                 next_funding,
                 format_price(rate.mark_price),
+                format_volume(rate.max_order_value) if rate.max_order_value else "N/A",
             ]
             if verbose:
                 row.append(format_volume(rate.volume_24h))
@@ -321,6 +323,7 @@ def display_funding_rates(
         table_negative.add_column("Annualized", justify="right", style="green")
         table_negative.add_column("Next Funding", justify="right", style="yellow")
         table_negative.add_column("Mark Price", justify="right")
+        table_negative.add_column("Max Order", justify="right", style="cyan")
         if verbose:
             table_negative.add_column("24h Volume", justify="right", style="dim")
         
@@ -333,6 +336,7 @@ def display_funding_rates(
                 f"{rate.annualized_rate:+.1f}%",
                 next_funding,
                 format_price(rate.mark_price),
+                format_volume(rate.max_order_value) if rate.max_order_value else "N/A",
             ]
             if verbose:
                 row.append(format_volume(rate.volume_24h))
@@ -369,23 +373,23 @@ def display_arbitrage_opportunities(
         show_header=True,
         header_style="bold magenta",
     )
-    table.add_column("Symbol", style="cyan", min_width=10)
-    table.add_column("Long (Receive)", style="green", min_width=18)
-    table.add_column("Short (Receive)", style="red", min_width=18)
+    table.add_column("Symbol", style="cyan", min_width=8)
+    table.add_column("Long Exchange", style="green", min_width=14)
+    table.add_column("Short Exchange", style="red", min_width=14)
     table.add_column("Spread", justify="right", style="bold yellow")
     table.add_column("Annual", justify="right", style="yellow")
     table.add_column("Price Δ", justify="right")
-    table.add_column("Min Vol", justify="right", style="dim")
+    table.add_column("Max Order", justify="right", style="cyan")
     table.add_column("Time", justify="right", style="dim")
-    if verbose:
-        table.add_column("Score", justify="right", style="dim")
     
     for opp in top_opportunities:
-        # Format long position
-        long_info = f"{opp.long_exchange}\n{opp.long_funding_rate:+.4f}%"
+        # Format long position with max order
+        long_max = format_volume(opp.long_max_order) if opp.long_max_order else "N/A"
+        long_info = f"{opp.long_exchange}\n{opp.long_funding_rate:+.4f}%\n{long_max}"
         
-        # Format short position
-        short_info = f"{opp.short_exchange}\n{opp.short_funding_rate:+.4f}%"
+        # Format short position with max order
+        short_max = format_volume(opp.short_max_order) if opp.short_max_order else "N/A"
+        short_info = f"{opp.short_exchange}\n{opp.short_funding_rate:+.4f}%\n{short_max}"
         
         # Price spread color based on value
         if opp.price_spread_percent < 0.1:
@@ -395,6 +399,10 @@ def display_arbitrage_opportunities(
         else:
             price_color = "red"
         
+        # Max position size (minimum of both exchanges)
+        max_pos = opp.max_position_size
+        max_pos_str = format_volume(max_pos) if max_pos else "N/A"
+        
         row = [
             opp.symbol,
             long_info,
@@ -402,11 +410,9 @@ def display_arbitrage_opportunities(
             f"{opp.funding_spread:.4f}%",
             f"{opp.annualized_spread:.1f}%",
             f"[{price_color}]{opp.price_spread_percent:.3f}%[/]",
-            format_volume(opp.min_volume_24h),
+            max_pos_str,
             f"{opp.time_to_funding_hours:.1f}h",
         ]
-        if verbose:
-            row.append(f"{opp.quality_score:.1f}")
         
         table.add_row(*row)
     
@@ -415,16 +421,21 @@ def display_arbitrage_opportunities(
     # Legend
     console.print("\n[dim]Strategy: Long on first exchange (lower funding), Short on second exchange (higher funding)[/]")
     console.print("[dim]Spread = Short funding - Long funding (profit per funding period)[/]")
+    console.print("[dim]Max Order = Maximum position size limited by both exchanges[/]")
     
     if verbose and opportunities:
         # Show detailed breakdown of top opportunity
         top = opportunities[0]
         console.print(f"\n[bold]Top Opportunity Details ({top.symbol}):[/]")
         console.print(f"  Long {top.long_exchange}: {top.long_funding_rate:+.4f}% @ {format_price(top.long_mark_price)}")
+        console.print(f"    Max Order: {format_volume(top.long_max_order) if top.long_max_order else 'N/A'}")
         console.print(f"  Short {top.short_exchange}: {top.short_funding_rate:+.4f}% @ {format_price(top.short_mark_price)}")
+        console.print(f"    Max Order: {format_volume(top.short_max_order) if top.short_max_order else 'N/A'}")
         console.print(f"  Funding Spread: {top.funding_spread:.4f}% per period")
         console.print(f"  Daily Profit: ~{top.daily_spread:.4f}%")
         console.print(f"  Annualized: ~{top.annualized_spread:.1f}%")
+        if top.max_position_size:
+            console.print(f"  Max Position: {format_volume(top.max_position_size)}")
 
 
 def display_errors(all_rates: List[ExchangeFundingRates]) -> None:

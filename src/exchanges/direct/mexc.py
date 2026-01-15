@@ -1,7 +1,7 @@
 """MEXC direct API connector."""
 
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Dict
 
 from src.models import FundingRateData, ExchangeFundingRates
 from .base import DirectAPIExchange, calculate_next_funding_time
@@ -16,6 +16,7 @@ class MEXCDirectExchange(DirectAPIExchange):
     Endpoints used:
     - GET /api/v1/contract/ticker - All tickers with volumes
     - GET /api/v1/contract/funding_rate - All funding rates
+    - GET /api/v1/contract/detail - Contract details with limits
     """
     
     name = "mexc"
@@ -53,6 +54,17 @@ class MEXCDirectExchange(DirectAPIExchange):
             
             funding_list = funding_data.get("data", [])
             
+            # Get contract details for limits
+            detail_url = f"{self.base_url}/api/v1/contract/detail"
+            detail_data = await self._request("GET", detail_url)
+            
+            # Create limits map
+            limits_map: Dict[str, Dict] = {}
+            if detail_data and detail_data.get("success"):
+                for detail in detail_data.get("data", []):
+                    symbol = detail.get("symbol", "")
+                    limits_map[symbol] = detail
+            
             self._logger.info(
                 f"[bold blue]{self.display_name}[/]: Found {len(funding_list)} perpetual markets"
             )
@@ -84,6 +96,28 @@ class MEXCDirectExchange(DirectAPIExchange):
                     # Get open interest
                     open_interest = float(ticker.get("holdVol", 0) or 0) or None
                     
+                    # Get order limits from contract details
+                    contract_detail = limits_map.get(raw_symbol, {})
+                    max_order_value = None
+                    max_leverage = None
+                    
+                    # maxVol is max order volume in contracts
+                    max_vol = contract_detail.get("maxVol")
+                    if max_vol and mark_price:
+                        try:
+                            contract_size = float(contract_detail.get("contractSize", 1) or 1)
+                            max_order_value = float(max_vol) * contract_size * mark_price
+                        except:
+                            pass
+                    
+                    # Get max leverage
+                    max_lev = contract_detail.get("maxLeverage")
+                    if max_lev:
+                        try:
+                            max_leverage = int(float(max_lev))
+                        except:
+                            pass
+                    
                     # Get next funding time
                     next_funding_ts = item.get("nextSettleTime")
                     next_funding_time = self._parse_timestamp(next_funding_ts)
@@ -105,6 +139,8 @@ class MEXCDirectExchange(DirectAPIExchange):
                         interval_hours=interval_hours,
                         volume_24h=volume_24h,
                         open_interest=open_interest,
+                        max_order_value=max_order_value,
+                        max_leverage=max_leverage,
                     )
                     result.rates.append(rate)
                     

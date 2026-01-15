@@ -15,6 +15,8 @@ class HyperliquidDirectExchange(DirectAPIExchange):
     
     Endpoints used:
     - POST /info - Meta and asset contexts with funding rates and volumes
+    
+    Note: Hyperliquid is a DEX, order limits may be dynamic or based on liquidity
     """
     
     name = "hyperliquid"
@@ -80,6 +82,28 @@ class HyperliquidDirectExchange(DirectAPIExchange):
                     # Get open interest
                     open_interest = float(ctx.get("openInterest", 0) or 0) or None
                     
+                    # Get order limits from asset info
+                    max_order_value = None
+                    max_leverage = None
+                    
+                    # maxTradeSz in contracts - multiply by mark price for value
+                    max_trade_sz = asset.get("maxTradeSz")
+                    sz_decimals = asset.get("szDecimals", 0)
+                    
+                    if max_trade_sz and mark_price:
+                        try:
+                            max_order_value = float(max_trade_sz) * mark_price
+                        except:
+                            pass
+                    
+                    # Get max leverage from asset
+                    max_lev = asset.get("maxLeverage")
+                    if max_lev:
+                        try:
+                            max_leverage = int(float(max_lev))
+                        except:
+                            pass
+                    
                     # Hyperliquid uses hourly funding
                     interval_hours = 1
                     next_funding_time = calculate_next_funding_time(interval_hours)
@@ -95,6 +119,8 @@ class HyperliquidDirectExchange(DirectAPIExchange):
                         interval_hours=interval_hours,
                         volume_24h=volume_24h,
                         open_interest=open_interest,
+                        max_order_value=max_order_value,
+                        max_leverage=max_leverage,
                     )
                     result.rates.append(rate)
                     

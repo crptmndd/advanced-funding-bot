@@ -14,7 +14,7 @@ class GateDirectExchange(DirectAPIExchange):
     API Docs: https://www.gate.io/docs/developers/apiv4/
     
     Endpoints used:
-    - GET /api/v4/futures/usdt/contracts - All USDT contracts with funding and volumes
+    - GET /api/v4/futures/usdt/contracts - All USDT contracts with funding, volumes and limits
     """
     
     name = "gate"
@@ -26,7 +26,7 @@ class GateDirectExchange(DirectAPIExchange):
         result = ExchangeFundingRates(exchange=self.name)
         
         try:
-            # Get all USDT perpetual contracts
+            # Get all USDT perpetual contracts (includes all info)
             url = f"{self.base_url}/futures/usdt/contracts"
             contracts = await self._request("GET", url)
             
@@ -56,16 +56,36 @@ class GateDirectExchange(DirectAPIExchange):
                     index_price = float(contract.get("index_price", 0) or 0) or None
                     
                     # Get 24h volume
-                    # volume_24h_usd or trade_size * mark_price
                     volume_24h = float(contract.get("volume_24h_usd", 0) or 0) or None
                     if not volume_24h:
-                        # Fallback: calculate from trade_size (in base) and mark_price
                         trade_size = float(contract.get("trade_size", 0) or 0)
                         if trade_size and mark_price:
                             volume_24h = trade_size * mark_price
                     
                     # Get open interest in quote currency
                     open_interest = float(contract.get("position_size", 0) or 0) or None
+                    
+                    # Get order limits
+                    max_order_value = None
+                    max_leverage = None
+                    
+                    # order_size_max is max order size in contracts
+                    order_size_max = contract.get("order_size_max")
+                    quanto_multiplier = float(contract.get("quanto_multiplier", 1) or 1)
+                    
+                    if order_size_max and mark_price:
+                        try:
+                            max_order_value = float(order_size_max) * quanto_multiplier * mark_price
+                        except:
+                            pass
+                    
+                    # Get max leverage
+                    leverage_max = contract.get("leverage_max")
+                    if leverage_max:
+                        try:
+                            max_leverage = int(float(leverage_max))
+                        except:
+                            pass
                     
                     # Funding interval in seconds, convert to hours
                     funding_interval = int(contract.get("funding_interval", 28800))
@@ -91,6 +111,8 @@ class GateDirectExchange(DirectAPIExchange):
                         interval_hours=interval_hours,
                         volume_24h=volume_24h,
                         open_interest=open_interest,
+                        max_order_value=max_order_value,
+                        max_leverage=max_leverage,
                     )
                     result.rates.append(rate)
                     

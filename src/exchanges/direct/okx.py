@@ -15,7 +15,7 @@ class OKXDirectExchange(DirectAPIExchange):
     API Docs: https://www.okx.com/docs-v5/en/
     
     Endpoints used:
-    - GET /api/v5/public/instruments - Get all instruments
+    - GET /api/v5/public/instruments - Get all instruments with limits
     - GET /api/v5/public/funding-rate - Get funding rate
     - GET /api/v5/market/tickers - Get all tickers for prices and volumes
     """
@@ -29,7 +29,7 @@ class OKXDirectExchange(DirectAPIExchange):
         result = ExchangeFundingRates(exchange=self.name)
         
         try:
-            # Step 1: Get all SWAP instruments
+            # Step 1: Get all SWAP instruments (includes limits)
             instruments_url = f"{self.base_url}/api/v5/public/instruments"
             instruments_data = await self._request(
                 "GET", instruments_url, 
@@ -42,11 +42,14 @@ class OKXDirectExchange(DirectAPIExchange):
             
             instruments = instruments_data.get("data", [])
             
-            # Filter USDT-margined swaps
-            usdt_swaps = [
-                inst for inst in instruments 
-                if inst.get("settleCcy") == "USDT" and inst.get("state") == "live"
-            ]
+            # Filter USDT-margined swaps and create limits map
+            usdt_swaps = []
+            limits_map: Dict[str, Dict] = {}
+            
+            for inst in instruments:
+                if inst.get("settleCcy") == "USDT" and inst.get("state") == "live":
+                    usdt_swaps.append(inst)
+                    limits_map[inst.get("instId", "")] = inst
             
             self._logger.info(
                 f"[bold blue]{self.display_name}[/]: Found {len(usdt_swaps)} perpetual markets"
@@ -113,12 +116,30 @@ class OKXDirectExchange(DirectAPIExchange):
                     mark_price = None
                     index_price = None
                     volume_24h = None
-                    open_interest = None
                     
                     if ticker:
                         mark_price = float(ticker.get("last", 0) or 0) or None
-                        # volCcy24h is volume in quote currency
                         volume_24h = float(ticker.get("volCcy24h", 0) or 0) or None
+                    
+                    # Get order limits from instrument info
+                    inst_limits = limits_map.get(inst_id, {})
+                    max_order_value = None
+                    max_leverage = None
+                    
+                    # maxLmtSz is max limit order size in contracts
+                    max_lmt_sz = float(inst_limits.get("maxLmtSz", 0) or 0)
+                    ct_val = float(inst_limits.get("ctVal", 1) or 1)  # Contract value
+                    
+                    if max_lmt_sz and mark_price and ct_val:
+                        max_order_value = max_lmt_sz * ct_val * mark_price
+                    
+                    # Get max leverage
+                    lever_str = inst_limits.get("lever", "")
+                    if lever_str:
+                        try:
+                            max_leverage = int(float(lever_str))
+                        except:
+                            pass
                     
                     # OKX uses 8-hour funding interval
                     interval_hours = 8
@@ -133,7 +154,8 @@ class OKXDirectExchange(DirectAPIExchange):
                         index_price=index_price,
                         interval_hours=interval_hours,
                         volume_24h=volume_24h,
-                        open_interest=open_interest,
+                        max_order_value=max_order_value,
+                        max_leverage=max_leverage,
                     )
                     result.rates.append(rate)
                     

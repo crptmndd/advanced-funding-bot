@@ -1,7 +1,7 @@
 """Bitget direct API connector."""
 
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Dict
 
 from src.models import FundingRateData, ExchangeFundingRates
 from .base import DirectAPIExchange, calculate_next_funding_time
@@ -16,6 +16,7 @@ class BitgetDirectExchange(DirectAPIExchange):
     Endpoints used:
     - GET /api/v2/mix/market/tickers - All tickers with volumes
     - GET /api/v2/mix/market/current-fund-rate - Current funding rates
+    - GET /api/v2/mix/market/contracts - Contract info with limits
     """
     
     name = "bitget"
@@ -47,12 +48,26 @@ class BitgetDirectExchange(DirectAPIExchange):
                 params={"productType": "USDT-FUTURES"}
             )
             
+            # Get contracts info for limits
+            contracts_url = f"{self.base_url}/api/v2/mix/market/contracts"
+            contracts_data = await self._request(
+                "GET", contracts_url,
+                params={"productType": "USDT-FUTURES"}
+            )
+            
             # Create funding rate map
             funding_map = {}
             if funding_data and funding_data.get("code") == "00000":
                 for item in funding_data.get("data", []):
                     symbol = item.get("symbol", "")
                     funding_map[symbol] = item
+            
+            # Create limits map
+            limits_map: Dict[str, Dict] = {}
+            if contracts_data and contracts_data.get("code") == "00000":
+                for contract in contracts_data.get("data", []):
+                    symbol = contract.get("symbol", "")
+                    limits_map[symbol] = contract
             
             self._logger.info(
                 f"[bold blue]{self.display_name}[/]: Found {len(tickers)} perpetual markets"
@@ -85,6 +100,29 @@ class BitgetDirectExchange(DirectAPIExchange):
                     # Get open interest
                     open_interest = float(ticker.get("openInterestUsd", 0) or 0) or None
                     
+                    # Get order limits from contracts info
+                    contract_info = limits_map.get(raw_symbol, {})
+                    max_order_value = None
+                    max_leverage = None
+                    
+                    # maxOrderQty * sizeMultiplier * mark_price = max order in USDT
+                    max_order_qty = contract_info.get("maxOrderQty")
+                    size_multiplier = contract_info.get("sizeMultiplier", "1")
+                    
+                    if max_order_qty and mark_price:
+                        try:
+                            max_order_value = float(max_order_qty) * float(size_multiplier) * mark_price
+                        except:
+                            pass
+                    
+                    # Get max leverage
+                    max_lev = contract_info.get("maxLever")
+                    if max_lev:
+                        try:
+                            max_leverage = int(float(max_lev))
+                        except:
+                            pass
+                    
                     # Get next funding time
                     next_funding_time = calculate_next_funding_time(8)
                     
@@ -102,6 +140,8 @@ class BitgetDirectExchange(DirectAPIExchange):
                         interval_hours=interval_hours,
                         volume_24h=volume_24h,
                         open_interest=open_interest,
+                        max_order_value=max_order_value,
+                        max_leverage=max_leverage,
                     )
                     result.rates.append(rate)
                     

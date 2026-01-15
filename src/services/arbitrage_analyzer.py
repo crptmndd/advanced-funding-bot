@@ -204,6 +204,8 @@ class ArbitrageAnalyzer:
                     short_volume_24h=short_rate.volume_24h,
                     short_next_funding=short_rate.next_funding_time,
                     short_interval_hours=short_rate.interval_hours,
+                    long_max_order=long_rate.max_order_value,
+                    short_max_order=short_rate.max_order_value,
                     funding_spread=funding_spread,
                     price_spread_percent=price_spread,
                     min_volume_24h=min_volume,
