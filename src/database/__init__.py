@@ -1,6 +1,14 @@
 """Database module for user management and wallet storage."""
 
-from .models import User, Wallet, UserSettings, WalletType, SubscriptionTier
+from .models import (
+    User,
+    Wallet,
+    UserSettings,
+    WalletType,
+    SubscriptionTier,
+    HyperliquidApiKey,
+    HyperliquidChain,
+)
 from .database import Database, get_database, close_database
 from .encryption import encrypt_private_key, decrypt_private_key
 from .wallet_generator import generate_evm_wallet, generate_solana_wallet
@@ -11,6 +19,8 @@ __all__ = [
     "UserSettings",
     "WalletType",
     "SubscriptionTier",
+    "HyperliquidApiKey",
+    "HyperliquidChain",
     "Database",
     "get_database",
     "close_database",

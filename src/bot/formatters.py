@@ -363,6 +363,27 @@ class TelegramFormatter:
 /set amount 500 - Set trade amount ($500)
 /set leverage 20 - Set max leverage (20x)
 
+<b>🟢 HyperLiquid Trading:</b>
+/hl - Account status & balance
+/hl_setup - Setup HyperLiquid (check balance & deposit)
+/hl_create_api - Create API key (after deposit)
+/hl_buy ETH 100 - Market buy $100 of ETH
+/hl_buy BTC 50 97000 - Limit buy $50 of BTC at $97k
+/hl_sell ETH 100 - Market sell $100 of ETH
+/hl_positions - View positions
+/hl_close BTC - Close position
+/hl_orders - View open orders
+/hl_cancel BTC 12345 - Cancel order
+/hl_leverage BTC 10 - Set leverage
+
+<b>🌉 Bridge:</b>
+/bridge - Check balance & deposit USDC to HyperLiquid
+
+<b>🔐 Security:</b>
+/export_keys - Export your private keys
+
+<i>⚠️ HyperLiquid requires deposit before API setup</i>
+
 <b>⚙️ Settings:</b>
 • <code>amount</code> - Trade amount (USDT)
 • <code>maxamount</code> - Max trade amount
@@ -387,14 +408,15 @@ This bot helps you find funding rate arbitrage opportunities across 13+ cryptocu
 {cls.EMOJI_TARGET} <b>Quick Start:</b>
 • /rates - View top funding rates
 • /arbitrage - Find arbitrage opportunities
+• /hl - HyperLiquid account & trading
 • /exchanges - See all supported exchanges
 • /help - Full command list
 
 {cls.EMOJI_FIRE} <b>Features:</b>
 • Real-time funding rates from 13 exchanges
 • Automatic arbitrage opportunity detection
-• Volume and price spread filtering
-• Mark prices and max order limits
+• HyperLiquid DEX trading integration
+• Auto-generated wallets (EVM + Solana)
 
 Type /help for all available commands.
 """

@@ -20,6 +20,12 @@ class SubscriptionTier(Enum):
     UNLIMITED = "unlimited"
 
 
+class HyperliquidChain(Enum):
+    """HyperLiquid chain types."""
+    MAINNET = "Mainnet"
+    TESTNET = "Testnet"
+
+
 @dataclass
 class User:
     """User model."""
@@ -143,4 +149,60 @@ class UserSettings:
         if not self.excluded_exchanges:
             return []
         return [e.strip().lower() for e in self.excluded_exchanges.split(",") if e.strip()]
+
+
+@dataclass
+class HyperliquidApiKey:
+    """
+    HyperLiquid API key model.
+    
+    HyperLiquid uses a special "agent wallet" system where you sign a message
+    with your main wallet to authorize an "agent" (API wallet) to trade on your behalf.
+    
+    The agent wallet's private key is used for signing trading requests.
+    """
+    
+    id: int  # Primary key
+    user_id: int  # Foreign key to User
+    wallet_id: int  # Foreign key to EVM Wallet used to create this API key
+    
+    # Agent wallet info (the API key itself)
+    agent_address: str  # Public address of the agent wallet
+    encrypted_agent_private_key: str  # Encrypted private key of agent wallet
+    
+    # API key metadata
+    agent_name: str  # Name given to the API key (e.g., "api2 valid_until 1784064998102")
+    
+    # Chain info
+    chain: HyperliquidChain = HyperliquidChain.MAINNET
+    
+    # Validity
+    valid_until: datetime = field(default_factory=datetime.utcnow)  # When the API key expires
+    nonce: int = 0  # Nonce used when creating the key
+    
+    # Status
+    is_active: bool = True
+    
+    # Timestamps
+    created_at: datetime = field(default_factory=datetime.utcnow)
+    
+    @property
+    def is_valid(self) -> bool:
+        """Check if API key is still valid (not expired)."""
+        return self.is_active and self.valid_until > datetime.utcnow()
+    
+    @property
+    def days_until_expiry(self) -> int:
+        """Get days until API key expires."""
+        if not self.is_valid:
+            return 0
+        delta = self.valid_until - datetime.utcnow()
+        return max(0, delta.days)
+    
+    @property
+    def short_agent_address(self) -> str:
+        """Get shortened agent address for display."""
+        if len(self.agent_address) > 12:
+            return f"{self.agent_address[:6]}...{self.agent_address[-4:]}"
+        return self.agent_address
 

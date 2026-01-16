@@ -7,13 +7,17 @@ from datetime import datetime
 from typing import Optional, List
 from pathlib import Path
 
-from .models import User, Wallet, UserSettings, WalletType, SubscriptionTier
+from .models import User, Wallet, UserSettings, WalletType, SubscriptionTier, HyperliquidApiKey, HyperliquidChain
 from .encryption import encrypt_private_key, decrypt_private_key
 from .wallet_generator import generate_evm_wallet, generate_solana_wallet
 
 
 # Logger
 logger = logging.getLogger(__name__)
+
+# Flag to enable/disable auto HyperLiquid API key creation
+# NOTE: Disabled because HyperLiquid requires a deposit before API key can be created
+AUTO_CREATE_HYPERLIQUID_API_KEY = False
 
 # Default database path
 DEFAULT_DB_PATH = Path(__file__).parent.parent.parent / "data" / "funding_bot.db"
@@ -111,12 +115,37 @@ class Database:
                 )
             """)
             
+            # HyperLiquid API keys table
+            await cursor.execute("""
+                CREATE TABLE IF NOT EXISTS hyperliquid_api_keys (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    wallet_id INTEGER NOT NULL,
+                    agent_address TEXT NOT NULL,
+                    encrypted_agent_private_key TEXT NOT NULL,
+                    agent_name TEXT NOT NULL,
+                    chain TEXT DEFAULT 'Mainnet',
+                    valid_until TEXT NOT NULL,
+                    nonce INTEGER NOT NULL,
+                    is_active INTEGER DEFAULT 1,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
+                    FOREIGN KEY (wallet_id) REFERENCES wallets (id) ON DELETE CASCADE
+                )
+            """)
+            
             # Create indexes
             await cursor.execute(
                 "CREATE INDEX IF NOT EXISTS idx_users_telegram_id ON users (telegram_id)"
             )
             await cursor.execute(
                 "CREATE INDEX IF NOT EXISTS idx_wallets_user_id ON wallets (user_id)"
+            )
+            await cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_hl_api_keys_user_id ON hyperliquid_api_keys (user_id)"
+            )
+            await cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_hl_api_keys_wallet_id ON hyperliquid_api_keys (wallet_id)"
             )
             
             await self._connection.commit()
@@ -159,13 +188,14 @@ class Database:
         last_name: Optional[str] = None,
     ) -> User:
         """
-        Create a new user with wallets.
+        Create a new user with wallets and HyperLiquid API key.
         
         This will:
         1. Create user record
         2. Generate EVM wallet
         3. Generate Solana wallet
         4. Create default settings
+        5. Create HyperLiquid API key (if enabled)
         """
         logger.info(f"Creating new user: telegram_id={telegram_id}, username={username}")
         
@@ -192,7 +222,12 @@ class Database:
         logger.info(f"Creating default settings for user {user_id}...")
         await self._create_default_settings(user_id)
         
-        logger.info(f"User {telegram_id} fully registered with wallets and settings")
+        # Create HyperLiquid API key (if enabled)
+        if AUTO_CREATE_HYPERLIQUID_API_KEY:
+            logger.info(f"Creating HyperLiquid API key for user {user_id}...")
+            await self._create_hyperliquid_api_key(user_id)
+        
+        logger.info(f"User {telegram_id} fully registered with wallets, settings, and API keys")
         return user
     
     async def get_or_create_user(
@@ -296,6 +331,83 @@ class Database:
         except Exception as e:
             logger.error(f"Failed to generate wallets for user {user_id}: {e}", exc_info=True)
             raise
+    
+    async def _create_hyperliquid_api_key(self, user_id: int, chain: str = "Mainnet") -> bool:
+        """
+        Create HyperLiquid API key for user.
+        
+        This creates an agent wallet and registers it with HyperLiquid.
+        The agent wallet can then be used for trading.
+        
+        Args:
+            user_id: User ID
+            chain: "Mainnet" or "Testnet"
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Import here to avoid circular imports
+            from src.exchanges.hyperliquid_auth import (
+                create_agent_key,
+                register_agent_with_hyperliquid,
+            )
+            
+            # Get user's EVM wallet
+            wallet = await self.get_user_wallet(user_id, WalletType.EVM)
+            if not wallet:
+                logger.error(f"No EVM wallet found for user {user_id}")
+                return False
+            
+            logger.info(f"[HL API Key] Creating for user {user_id}, wallet {wallet.short_address}")
+            
+            # Get wallet private key
+            private_key = await self.get_wallet_private_key(wallet.id)
+            if not private_key:
+                logger.error(f"Failed to get wallet private key for user {user_id}")
+                return False
+            
+            # Create agent key (locally)
+            logger.info(f"[HL API Key] Generating agent wallet and signing approval...")
+            agent_key = create_agent_key(
+                main_wallet_private_key=private_key,
+                validity_days=180,
+                chain=chain,
+            )
+            
+            # Register with HyperLiquid
+            logger.info(f"[HL API Key] Registering agent with HyperLiquid API...")
+            success, error = await register_agent_with_hyperliquid(
+                agent_key=agent_key,
+                main_wallet_address=wallet.address,
+            )
+            
+            if not success:
+                logger.error(f"[HL API Key] Registration failed for user {user_id}: {error}")
+                # Don't raise - user is still created, just without HL API key
+                return False
+            
+            # Save to database
+            logger.info(f"[HL API Key] Saving to database...")
+            await self.save_hyperliquid_api_key(
+                user_id=user_id,
+                wallet_id=wallet.id,
+                agent_address=agent_key.agent_address,
+                agent_private_key=agent_key.agent_private_key,
+                agent_name=agent_key.agent_name,
+                chain=chain,
+                valid_until=agent_key.valid_until,
+                nonce=agent_key.nonce,
+            )
+            
+            logger.info(f"[HL API Key] Successfully created for user {user_id}")
+            logger.info(f"[HL API Key] Agent: {agent_key.agent_address[:10]}..., valid until {agent_key.valid_until.date()}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"[HL API Key] Failed to create for user {user_id}: {e}", exc_info=True)
+            # Don't raise - user is still created, just without HL API key
+            return False
     
     async def _save_wallet(
         self,
@@ -471,6 +583,207 @@ class Database:
             updated_at=datetime.fromisoformat(row["updated_at"]),
         )
     
+    # ==================== HyperLiquid API Key Operations ====================
+    
+    async def save_hyperliquid_api_key(
+        self,
+        user_id: int,
+        wallet_id: int,
+        agent_address: str,
+        agent_private_key: str,
+        agent_name: str,
+        chain: str,
+        valid_until: datetime,
+        nonce: int,
+    ) -> int:
+        """
+        Save a HyperLiquid API key to the database.
+        
+        Args:
+            user_id: User ID
+            wallet_id: Wallet ID (the EVM wallet used to create this API key)
+            agent_address: Public address of the agent wallet
+            agent_private_key: Private key of the agent wallet (will be encrypted)
+            agent_name: Name of the agent
+            chain: "Mainnet" or "Testnet"
+            valid_until: When the API key expires
+            nonce: Nonce used when creating the key
+            
+        Returns:
+            ID of the created API key record
+        """
+        logger.info(f"[DB] Saving HyperLiquid API key for user {user_id}")
+        logger.debug(f"[DB] Agent address: {agent_address[:10]}...")
+        logger.debug(f"[DB] Chain: {chain}, Valid until: {valid_until.isoformat()}")
+        
+        encrypted_key = encrypt_private_key(agent_private_key)
+        
+        async with self._connection.cursor() as cursor:
+            await cursor.execute("""
+                INSERT INTO hyperliquid_api_keys 
+                (user_id, wallet_id, agent_address, encrypted_agent_private_key, 
+                 agent_name, chain, valid_until, nonce)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                user_id, wallet_id, agent_address, encrypted_key,
+                agent_name, chain, valid_until.isoformat(), nonce,
+            ))
+            
+            api_key_id = cursor.lastrowid
+            await self._connection.commit()
+            
+            logger.info(f"[DB] HyperLiquid API key saved with ID: {api_key_id}")
+            return api_key_id
+    
+    async def get_hyperliquid_api_key(
+        self,
+        user_id: int,
+        chain: str = "Mainnet",
+        active_only: bool = True,
+    ) -> Optional[HyperliquidApiKey]:
+        """
+        Get HyperLiquid API key for a user.
+        
+        Args:
+            user_id: User ID
+            chain: "Mainnet" or "Testnet"
+            active_only: Only return active keys
+            
+        Returns:
+            HyperliquidApiKey or None if not found
+        """
+        logger.debug(f"[DB] Getting HyperLiquid API key for user {user_id}, chain={chain}")
+        
+        async with self._connection.cursor() as cursor:
+            query = """
+                SELECT * FROM hyperliquid_api_keys 
+                WHERE user_id = ? AND chain = ?
+            """
+            params = [user_id, chain]
+            
+            if active_only:
+                query += " AND is_active = 1"
+            
+            query += " ORDER BY created_at DESC LIMIT 1"
+            
+            await cursor.execute(query, params)
+            row = await cursor.fetchone()
+            
+            if row is None:
+                logger.debug(f"[DB] No HyperLiquid API key found for user {user_id}")
+                return None
+            
+            return self._row_to_hyperliquid_api_key(row)
+    
+    async def get_hyperliquid_api_key_private_key(self, api_key_id: int) -> Optional[str]:
+        """
+        Get decrypted private key for HyperLiquid API key.
+        
+        WARNING: Handle with care! Only use when absolutely necessary.
+        
+        Args:
+            api_key_id: ID of the API key record
+            
+        Returns:
+            Decrypted agent private key or None
+        """
+        logger.debug(f"[DB] Getting HyperLiquid API key private key for ID {api_key_id}")
+        
+        async with self._connection.cursor() as cursor:
+            await cursor.execute(
+                "SELECT encrypted_agent_private_key FROM hyperliquid_api_keys WHERE id = ?",
+                (api_key_id,)
+            )
+            row = await cursor.fetchone()
+            
+            if row is None:
+                return None
+            
+            return decrypt_private_key(row["encrypted_agent_private_key"])
+    
+    async def get_all_hyperliquid_api_keys(
+        self,
+        user_id: int,
+        active_only: bool = True,
+    ) -> List[HyperliquidApiKey]:
+        """
+        Get all HyperLiquid API keys for a user.
+        
+        Args:
+            user_id: User ID
+            active_only: Only return active keys
+            
+        Returns:
+            List of HyperliquidApiKey objects
+        """
+        async with self._connection.cursor() as cursor:
+            query = "SELECT * FROM hyperliquid_api_keys WHERE user_id = ?"
+            params = [user_id]
+            
+            if active_only:
+                query += " AND is_active = 1"
+            
+            query += " ORDER BY created_at DESC"
+            
+            await cursor.execute(query, params)
+            rows = await cursor.fetchall()
+            
+            return [self._row_to_hyperliquid_api_key(row) for row in rows]
+    
+    async def deactivate_hyperliquid_api_key(self, api_key_id: int) -> None:
+        """
+        Deactivate a HyperLiquid API key.
+        
+        Args:
+            api_key_id: ID of the API key to deactivate
+        """
+        logger.info(f"[DB] Deactivating HyperLiquid API key ID {api_key_id}")
+        
+        async with self._connection.cursor() as cursor:
+            await cursor.execute(
+                "UPDATE hyperliquid_api_keys SET is_active = 0 WHERE id = ?",
+                (api_key_id,)
+            )
+            await self._connection.commit()
+    
+    async def has_valid_hyperliquid_api_key(
+        self,
+        user_id: int,
+        chain: str = "Mainnet",
+    ) -> bool:
+        """
+        Check if user has a valid (active and not expired) HyperLiquid API key.
+        
+        Args:
+            user_id: User ID
+            chain: "Mainnet" or "Testnet"
+            
+        Returns:
+            True if user has a valid API key
+        """
+        api_key = await self.get_hyperliquid_api_key(user_id, chain)
+        
+        if api_key is None:
+            return False
+        
+        return api_key.is_valid
+    
+    def _row_to_hyperliquid_api_key(self, row: aiosqlite.Row) -> HyperliquidApiKey:
+        """Convert database row to HyperliquidApiKey object."""
+        return HyperliquidApiKey(
+            id=row["id"],
+            user_id=row["user_id"],
+            wallet_id=row["wallet_id"],
+            agent_address=row["agent_address"],
+            encrypted_agent_private_key=row["encrypted_agent_private_key"],
+            agent_name=row["agent_name"],
+            chain=HyperliquidChain(row["chain"]),
+            valid_until=datetime.fromisoformat(row["valid_until"]),
+            nonce=row["nonce"],
+            is_active=bool(row["is_active"]),
+            created_at=datetime.fromisoformat(row["created_at"]),
+        )
+    
     # ==================== Statistics ====================
     
     async def get_stats(self) -> dict:
@@ -490,10 +803,15 @@ class Database:
             await cursor.execute("SELECT COUNT(*) FROM wallets WHERE is_active = 1")
             total_wallets = (await cursor.fetchone())[0]
             
+            # Total HyperLiquid API keys
+            await cursor.execute("SELECT COUNT(*) FROM hyperliquid_api_keys WHERE is_active = 1")
+            total_hl_api_keys = (await cursor.fetchone())[0]
+            
             return {
                 "total_users": total_users,
                 "active_users": active_users,
                 "total_wallets": total_wallets,
+                "total_hl_api_keys": total_hl_api_keys,
             }
 
 
