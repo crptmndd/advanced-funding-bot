@@ -4,6 +4,17 @@ python-dotenv>=1.0.0
 pydantic>=2.5.0
 rich>=13.7.0
 python-telegram-bot>=21.0
+
+# Database
+aiosqlite>=0.19.0
+
+# Wallet generation
+eth-account>=0.11.0
+solders>=0.21.0
+
+# Encryption for private keys
+cryptography>=41.0.0
+
 # Note: aiodns is intentionally excluded as it can cause DNS resolution issues
 # aiohttp will use the system DNS resolver instead
 

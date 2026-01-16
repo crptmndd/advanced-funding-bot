@@ -17,14 +17,40 @@ Environment variables:
 import os
 import sys
 import argparse
+import logging
 
 from dotenv import load_dotenv
 
-from src.bot import FundingBot
+
+def setup_logging():
+    """Configure logging to show bot activity but hide noisy libraries."""
+    # Set root logger
+    logging.basicConfig(
+        format="%(asctime)s | %(levelname)-7s | %(name)s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        level=logging.INFO,
+    )
+    
+    # Suppress noisy loggers
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("aiosqlite").setLevel(logging.WARNING)
+    logging.getLogger("asyncio").setLevel(logging.WARNING)
+    logging.getLogger("telegram.ext.Application").setLevel(logging.WARNING)
+    logging.getLogger("telegram.ext.ExtBot").setLevel(logging.WARNING)
+    logging.getLogger("telegram.ext.Updater").setLevel(logging.WARNING)
+    logging.getLogger("rlp.codec").setLevel(logging.WARNING)
+    
+    # Make sure our loggers are visible at INFO level
+    logging.getLogger("src.bot").setLevel(logging.INFO)
+    logging.getLogger("src.database").setLevel(logging.INFO)
 
 
 def main():
     """Main entry point for the Telegram bot."""
+    # Setup logging first
+    setup_logging()
+    
     # Load environment variables
     load_dotenv()
     
@@ -64,6 +90,9 @@ def main():
     print("Starting bot...")
     print("Press Ctrl+C to stop")
     print()
+    
+    # Import after logging setup
+    from src.bot import FundingBot
     
     # Run the bot
     bot = FundingBot(token)

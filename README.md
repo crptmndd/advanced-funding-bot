@@ -172,6 +172,19 @@ Run the interactive Telegram bot to get funding rates and arbitrage opportunitie
 - 📈 **Mark Price & Volume**: See prices and 24h volumes
 - 🎯 **Max Order Limits**: Know position size limits
 - ⏰ **Next Funding Time**: Countdown to next funding
+- 💳 **Auto Wallets**: EVM + Solana wallets created automatically
+- ⚙️ **Custom Settings**: Configure trade amounts and filters
+
+### Wallet & Settings Commands
+
+| Command | Description |
+|---------|-------------|
+| `/wallet` | View your EVM & Solana wallet addresses |
+| `/settings` | View your trading settings |
+| `/set amount 500` | Set trade amount to $500 USDT |
+| `/set leverage 20` | Set max leverage to 20x |
+| `/set spread 0.05` | Set minimum funding spread |
+| `/set volume 50000` | Set minimum 24h volume filter |
 
 ## 💰 Arbitrage Strategy
 
@@ -204,24 +217,49 @@ funding-bot/
 │   │   ├── __init__.py
 │   │   ├── bot.py              # Bot handlers and logic
 │   │   └── formatters.py       # Message formatting
+│   ├── database/               # Database & wallet management
+│   │   ├── __init__.py
+│   │   ├── database.py         # SQLite database service
+│   │   ├── models.py           # User, Wallet, Settings models
+│   │   ├── encryption.py       # Private key encryption
+│   │   └── wallet_generator.py # EVM & Solana wallet generation
 │   ├── models/
-│   │   ├── __init__.py
-│   │   └── funding_rate.py     # Data models
+│   │   └── funding_rate.py     # Funding rate data models
 │   ├── services/
-│   │   ├── __init__.py
 │   │   └── arbitrage_analyzer.py  # Arbitrage analysis
 │   ├── exchanges/
-│   │   ├── __init__.py
 │   │   ├── base.py             # Base exchange class
 │   │   ├── registry.py         # Exchange registry
 │   │   ├── ccxt_exchange.py    # CCXT-based connectors
 │   │   └── direct/             # Direct API connectors (13 exchanges)
 │   └── utils/
-│       ├── __init__.py
 │       └── logger.py           # Logging utilities
+├── data/
+│   └── funding_bot.db          # SQLite database (auto-created)
 ├── requirements.txt
-├── .env.example                # Environment variables template
 └── README.md
+```
+
+## 💾 Database
+
+The bot uses SQLite to store user data:
+
+- **Users**: Telegram ID, subscription status, timestamps
+- **Wallets**: Auto-generated EVM & Solana wallets (encrypted private keys)
+- **Settings**: Trade amounts, leverage, filters per user
+
+### Security
+
+Private keys are encrypted using Fernet (AES-128-CBC) with PBKDF2 key derivation.
+
+Set secure encryption in production:
+```bash
+# Generate encryption key
+python -c "from src.database.encryption import generate_encryption_key; print(generate_encryption_key())"
+
+# Set in environment
+export WALLET_ENCRYPTION_KEY=your_generated_key
+export MASTER_PASSWORD=your_secure_password
 ```
 
 ## 🔄 Funding Rate Intervals
@@ -255,8 +293,9 @@ Benefits of direct API:
 ## 📈 Future Plans
 
 - [x] ~~Telegram bot interface~~ ✅ Implemented!
+- [x] ~~Internal EVM & Solana wallets~~ ✅ Implemented!
+- [x] ~~User settings for trade amounts~~ ✅ Implemented!
 - [ ] Subscription system for premium features
-- [ ] Internal EVM wallet for automated arbitrage
 - [ ] Automated position opening/closing
 - [ ] Historical funding rate analysis
 - [ ] Real-time WebSocket updates

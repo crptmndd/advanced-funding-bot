@@ -351,26 +351,29 @@ class TelegramFormatter:
         return f"""
 {cls.EMOJI_CHART} <b>Funding Rate Arbitrage Bot</b>
 
-<b>Commands:</b>
-
-/rates - Get top funding rates from all exchanges
-/rates binance - Get rates from specific exchange
-/rates binance bybit - Get rates from multiple exchanges
-
+<b>📊 Market Data:</b>
+/rates - Get top funding rates
+/rates binance - Rates from specific exchange
 /arbitrage - Find arbitrage opportunities
-/arbitrage 20 - Show top 20 opportunities
-
 /exchanges - List available exchanges
 
-/help - Show this help message
+<b>💳 Account:</b>
+/wallet - View your EVM & Solana wallets
+/settings - View your trading settings
+/set amount 500 - Set trade amount ($500)
+/set leverage 20 - Set max leverage (20x)
 
-<b>Options:</b>
-Add number after command to change top N results
-Example: <code>/rates 20</code> - show top 20 rates
+<b>⚙️ Settings:</b>
+• <code>amount</code> - Trade amount (USDT)
+• <code>maxamount</code> - Max trade amount
+• <code>leverage</code> - Max leverage (1-100)
+• <code>spread</code> - Min funding spread (%)
+• <code>volume</code> - Min 24h volume
 
-<b>Supported Exchanges:</b>
-Binance, Bybit, OKX, Bitget, BingX, MEXC, Gate.io, 
-Hyperliquid, Hibachi, Pacifica, Lighter, Backpack, Drift
+<b>🏦 13 Supported Exchanges:</b>
+Binance, Bybit, OKX, Bitget, BingX, MEXC, 
+Gate.io, Hyperliquid, Hibachi, Pacifica, 
+Lighter, Backpack, Drift
 """
     
     @classmethod
