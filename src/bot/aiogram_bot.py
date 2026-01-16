@@ -39,6 +39,7 @@ from src.exchanges.arbitrum_bridge import (
 from src.services.arbitrage_analyzer import ArbitrageAnalyzer, AnalyzerConfig
 from src.services.hyperliquid_service import HyperliquidService
 from src.services.okx_service import OKXService
+from src.services.withdrawal_tracker import WithdrawalTracker, get_withdrawal_tracker
 from src.database import Database, get_database, WalletType, decrypt_private_key
 from .formatters import TelegramFormatter
 
@@ -216,6 +217,11 @@ class FundingBot:
         self.okx_service = OKXService(self.db)
         logger.info("OKX service initialized")
         
+        # Initialize withdrawal tracker with notification callback
+        self.withdrawal_tracker = get_withdrawal_tracker()
+        self.withdrawal_tracker.set_notification_callback(self._send_withdrawal_notification)
+        logger.info("Withdrawal tracker initialized")
+        
         # Set bot commands
         commands = [
             BotCommand(command="start", description="Start the bot"),
@@ -228,6 +234,19 @@ class FundingBot:
             BotCommand(command="settings", description="Settings"),
         ]
         await self.bot.set_my_commands(commands)
+    
+    async def _send_withdrawal_notification(self, withdrawal_info, message: str) -> None:
+        """Send withdrawal notification to user via Telegram."""
+        try:
+            await self.bot.send_message(
+                chat_id=withdrawal_info.telegram_user_id,
+                text=message,
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+            )
+            logger.info(f"Sent withdrawal notification to user {withdrawal_info.telegram_user_id}")
+        except Exception as e:
+            logger.error(f"Failed to send withdrawal notification: {e}")
     
     async def _ensure_user(self, user_id: int, username: str = None, 
                            first_name: str = None, last_name: str = None) -> None:
@@ -1090,12 +1109,38 @@ class FundingBot:
             )
             
             if success:
+                # Get wallet address for tracking
+                wallet = await self.db.get_user_wallet(db_user.id, WalletType.EVM)
+                wallet_address = wallet.address if wallet else ""
+                
+                # Extract transaction hash from response if available
+                tx_hash = None
+                if response:
+                    # HyperLiquid may return tx hash in different formats
+                    tx_hash = response.get("response", {}).get("data", {}).get("hash")
+                    if not tx_hash:
+                        tx_hash = response.get("hash")
+                
+                # Start tracking the withdrawal
+                if hasattr(self, 'withdrawal_tracker') and self.withdrawal_tracker:
+                    await self.withdrawal_tracker.track_withdrawal(
+                        user_id=db_user.id,
+                        telegram_user_id=user.id,
+                        amount_usd=amount,
+                        wallet_address=wallet_address,
+                        tx_hash=tx_hash,
+                    )
+                    tracking_msg = "\n\n📡 <i>Tracking transaction... You'll be notified when confirmed.</i>"
+                else:
+                    tracking_msg = ""
+                
                 await loading_msg.edit_text(
                     f"✅ <b>Withdrawal Initiated</b>\n\n"
                     f"Amount: <code>${amount:.2f}</code>\n"
                     f"Network: Arbitrum\n"
                     f"Status: Processing\n\n"
                     f"<i>Note: ~$1 fee deducted. Arrival: 1-5 minutes.</i>"
+                    f"{tracking_msg}"
                 )
             else:
                 await loading_msg.edit_text(f"❌ Withdrawal failed: {error}")

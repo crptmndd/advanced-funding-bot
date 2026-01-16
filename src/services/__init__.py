@@ -9,6 +9,12 @@ from .okx_service import (
     OKXService,
     get_okx_service,
 )
+from .withdrawal_tracker import (
+    WithdrawalTracker,
+    get_withdrawal_tracker,
+    WithdrawalInfo,
+    TransactionStatus,
+)
 
 __all__ = [
     "ArbitrageAnalyzer",
@@ -16,5 +22,9 @@ __all__ = [
     "get_hyperliquid_service",
     "OKXService",
     "get_okx_service",
+    "WithdrawalTracker",
+    "get_withdrawal_tracker",
+    "WithdrawalInfo",
+    "TransactionStatus",
 ]
 
