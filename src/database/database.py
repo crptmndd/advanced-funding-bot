@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Optional, List
 from pathlib import Path
 
-from .models import User, Wallet, UserSettings, WalletType, SubscriptionTier, HyperliquidApiKey, HyperliquidChain
+from .models import User, Wallet, UserSettings, WalletType, SubscriptionTier, HyperliquidApiKey, HyperliquidChain, OKXApiKey
 from .encryption import encrypt_private_key, decrypt_private_key
 from .wallet_generator import generate_evm_wallet, generate_solana_wallet
 
@@ -134,6 +134,23 @@ class Database:
                 )
             """)
             
+            # OKX API keys table
+            await cursor.execute("""
+                CREATE TABLE IF NOT EXISTS okx_api_keys (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    encrypted_api_key TEXT NOT NULL,
+                    encrypted_secret_key TEXT NOT NULL,
+                    encrypted_passphrase TEXT NOT NULL,
+                    label TEXT DEFAULT 'OKX Trading',
+                    is_sandbox INTEGER DEFAULT 0,
+                    is_active INTEGER DEFAULT 1,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+                )
+            """)
+            
             # Create indexes
             await cursor.execute(
                 "CREATE INDEX IF NOT EXISTS idx_users_telegram_id ON users (telegram_id)"
@@ -146,6 +163,9 @@ class Database:
             )
             await cursor.execute(
                 "CREATE INDEX IF NOT EXISTS idx_hl_api_keys_wallet_id ON hyperliquid_api_keys (wallet_id)"
+            )
+            await cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_okx_api_keys_user_id ON okx_api_keys (user_id)"
             )
             
             await self._connection.commit()
@@ -782,6 +802,156 @@ class Database:
             nonce=row["nonce"],
             is_active=bool(row["is_active"]),
             created_at=datetime.fromisoformat(row["created_at"]),
+        )
+    
+    # ==================== OKX API Key Operations ====================
+    
+    async def save_okx_api_key(
+        self,
+        user_id: int,
+        api_key: str,
+        secret_key: str,
+        passphrase: str,
+        label: str = "OKX Trading",
+        is_sandbox: bool = False,
+    ) -> int:
+        """
+        Save an OKX API key to the database.
+        
+        Args:
+            user_id: User ID
+            api_key: OKX API key
+            secret_key: OKX secret key
+            passphrase: OKX passphrase
+            label: User-defined label
+            is_sandbox: Whether this is a sandbox key
+            
+        Returns:
+            ID of the created API key record
+        """
+        logger.info(f"[DB] Saving OKX API key for user {user_id}")
+        
+        # Encrypt credentials
+        encrypted_api_key = encrypt_private_key(api_key)
+        encrypted_secret_key = encrypt_private_key(secret_key)
+        encrypted_passphrase = encrypt_private_key(passphrase)
+        
+        # Deactivate any existing OKX API keys for this user
+        async with self._connection.cursor() as cursor:
+            await cursor.execute(
+                "UPDATE okx_api_keys SET is_active = 0 WHERE user_id = ?",
+                (user_id,)
+            )
+            
+            # Insert new key
+            await cursor.execute("""
+                INSERT INTO okx_api_keys 
+                (user_id, encrypted_api_key, encrypted_secret_key, encrypted_passphrase, label, is_sandbox)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (
+                user_id, encrypted_api_key, encrypted_secret_key, encrypted_passphrase, label, int(is_sandbox),
+            ))
+            
+            api_key_id = cursor.lastrowid
+            await self._connection.commit()
+            
+            logger.info(f"[DB] OKX API key saved with ID: {api_key_id}")
+            return api_key_id
+    
+    async def get_okx_api_key(
+        self,
+        user_id: int,
+        active_only: bool = True,
+    ) -> Optional[OKXApiKey]:
+        """
+        Get OKX API key for a user.
+        
+        Args:
+            user_id: User ID
+            active_only: Only return active keys
+            
+        Returns:
+            OKXApiKey or None if not found
+        """
+        logger.debug(f"[DB] Getting OKX API key for user {user_id}")
+        
+        async with self._connection.cursor() as cursor:
+            query = "SELECT * FROM okx_api_keys WHERE user_id = ?"
+            params = [user_id]
+            
+            if active_only:
+                query += " AND is_active = 1"
+            
+            query += " ORDER BY created_at DESC LIMIT 1"
+            
+            await cursor.execute(query, params)
+            row = await cursor.fetchone()
+            
+            if row is None:
+                logger.debug(f"[DB] No OKX API key found for user {user_id}")
+                return None
+            
+            return self._row_to_okx_api_key(row)
+    
+    async def get_okx_api_key_credentials(self, api_key_id: int) -> Optional[dict]:
+        """
+        Get decrypted OKX API credentials.
+        
+        WARNING: Handle with care!
+        
+        Args:
+            api_key_id: ID of the API key record
+            
+        Returns:
+            Dict with api_key, secret_key, passphrase or None
+        """
+        logger.debug(f"[DB] Getting OKX API credentials for ID {api_key_id}")
+        
+        async with self._connection.cursor() as cursor:
+            await cursor.execute(
+                "SELECT encrypted_api_key, encrypted_secret_key, encrypted_passphrase FROM okx_api_keys WHERE id = ?",
+                (api_key_id,)
+            )
+            row = await cursor.fetchone()
+            
+            if row is None:
+                return None
+            
+            return {
+                "api_key": decrypt_private_key(row["encrypted_api_key"]),
+                "secret_key": decrypt_private_key(row["encrypted_secret_key"]),
+                "passphrase": decrypt_private_key(row["encrypted_passphrase"]),
+            }
+    
+    async def has_okx_api_key(self, user_id: int) -> bool:
+        """Check if user has an active OKX API key."""
+        api_key = await self.get_okx_api_key(user_id)
+        return api_key is not None and api_key.is_valid
+    
+    async def deactivate_okx_api_key(self, api_key_id: int) -> None:
+        """Deactivate an OKX API key."""
+        logger.info(f"[DB] Deactivating OKX API key ID {api_key_id}")
+        
+        async with self._connection.cursor() as cursor:
+            await cursor.execute(
+                "UPDATE okx_api_keys SET is_active = 0, updated_at = ? WHERE id = ?",
+                (datetime.utcnow().isoformat(), api_key_id)
+            )
+            await self._connection.commit()
+    
+    def _row_to_okx_api_key(self, row: aiosqlite.Row) -> OKXApiKey:
+        """Convert database row to OKXApiKey object."""
+        return OKXApiKey(
+            id=row["id"],
+            user_id=row["user_id"],
+            encrypted_api_key=row["encrypted_api_key"],
+            encrypted_secret_key=row["encrypted_secret_key"],
+            encrypted_passphrase=row["encrypted_passphrase"],
+            label=row["label"] or "OKX Trading",
+            is_sandbox=bool(row["is_sandbox"]),
+            is_active=bool(row["is_active"]),
+            created_at=datetime.fromisoformat(row["created_at"]),
+            updated_at=datetime.fromisoformat(row["updated_at"]),
         )
     
     # ==================== Statistics ====================

@@ -51,6 +51,26 @@ class ArbitrageAnalyzer:
         self.config = config or AnalyzerConfig()
         self._logger = get_logger()
     
+    def find_opportunities(
+        self,
+        exchange_rates: List[ExchangeFundingRates],
+        limit: int = 10,
+        verbose: bool = False,
+    ) -> List[ArbitrageOpportunity]:
+        """
+        Find arbitrage opportunities (convenience method).
+        
+        Args:
+            exchange_rates: List of funding rates from each exchange
+            limit: Maximum number of opportunities to return
+            verbose: Enable verbose logging
+            
+        Returns:
+            List of top arbitrage opportunities
+        """
+        all_opportunities = self.analyze(exchange_rates, verbose)
+        return all_opportunities[:limit]
+    
     def analyze(
         self,
         exchange_rates: List[ExchangeFundingRates],

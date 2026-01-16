@@ -304,6 +304,77 @@ class HyperliquidService:
         
         return result, result.error if not result.success else None
     
+    async def place_order_by_margin(
+        self,
+        user_id: int,
+        symbol: str,
+        side: str,  # "buy" or "sell"
+        margin_usdt: float,
+        leverage: int,
+        price: Optional[float] = None,
+        is_market: bool = False,
+        reduce_only: bool = False,
+        is_mainnet: bool = True,
+    ) -> Tuple[Optional[OrderResult], Optional[str]]:
+        """
+        Place an order for a user specifying the margin amount in USDT.
+        
+        Position size is calculated as: margin × leverage / price
+        
+        Args:
+            user_id: User ID
+            symbol: Trading symbol (e.g., "BTC", "ETH")
+            side: "buy" or "sell"
+            margin_usdt: Margin amount in USDT
+            leverage: Leverage to use (e.g., 10 for 10x)
+            price: Limit price (optional for market orders)
+            is_market: Whether this is a market order
+            reduce_only: Whether this order can only reduce position
+            is_mainnet: Whether to use mainnet or testnet
+            
+        Returns:
+            Tuple of (order_result or None, error_message or None)
+        """
+        position_value = margin_usdt * leverage
+        logger.info(f"[HyperLiquid Service] Placing {side} order: margin=${margin_usdt}, leverage={leverage}x, position=${position_value}")
+        
+        client, error = await self.get_trading_client(user_id, is_mainnet)
+        if not client:
+            return None, error
+        
+        # Set leverage first
+        symbol_clean = symbol.upper().replace("/USD", "").replace(":USD", "").replace("USDT", "").replace("PERP", "")
+        leverage_success = await client.set_leverage(symbol_clean, leverage, is_cross=True)
+        if not leverage_success:
+            logger.warning(f"[HyperLiquid Service] Failed to set leverage to {leverage}x, continuing anyway")
+        
+        # Get current price to calculate size
+        execution_price = price
+        if execution_price is None:
+            # Fetch current market price
+            execution_price = await client._get_mark_price(symbol)
+            if execution_price is None:
+                return None, f"Failed to get current price for {symbol}"
+        
+        logger.info(f"[HyperLiquid Service] Price for {symbol}: ${execution_price:,.2f}")
+        
+        # Calculate size from position value (margin × leverage)
+        # Position value = size × price, so size = position_value / price
+        size = round(position_value / execution_price, 4)
+        logger.info(f"[HyperLiquid Service] Calculated size: {size} {symbol} (position ${position_value:,.2f})")
+        
+        # Place the order using the regular method
+        return await self.place_order(
+            user_id=user_id,
+            symbol=symbol,
+            side=side,
+            size=size,
+            price=price,
+            is_market=is_market,
+            reduce_only=reduce_only,
+            is_mainnet=is_mainnet,
+        )
+    
     async def place_order_by_usdt(
         self,
         user_id: int,
@@ -317,6 +388,8 @@ class HyperliquidService:
     ) -> Tuple[Optional[OrderResult], Optional[str]]:
         """
         Place an order for a user specifying the amount in USDT.
+        
+        DEPRECATED: Use place_order_by_margin instead for margin-based orders.
         
         The actual token size is calculated based on current market price.
         
@@ -547,6 +620,119 @@ class HyperliquidService:
             "created_at": api_key.created_at.isoformat(),
             "message": "Valid" if api_key.is_valid else "Expired",
         }
+    
+    async def get_positions(
+        self,
+        user_id: int,
+        is_mainnet: bool = True,
+    ) -> Tuple[Optional[list], Optional[str]]:
+        """
+        Get all open positions for a user.
+        
+        Args:
+            user_id: User ID
+            is_mainnet: Whether to use mainnet or testnet
+            
+        Returns:
+            Tuple of (list of Position objects or None, error_message or None)
+        """
+        logger.info(f"[HyperLiquid Service] Getting positions for user {user_id}")
+        
+        account_state, error = await self.get_account_state(user_id, is_mainnet)
+        if not account_state:
+            return None, error or "Failed to get account state"
+        
+        # Return positions from account state
+        positions = account_state.positions if account_state.positions else []
+        logger.info(f"[HyperLiquid Service] Found {len(positions)} open positions")
+        
+        return positions, None
+    
+    async def get_open_orders(
+        self,
+        user_id: int,
+        is_mainnet: bool = True,
+    ) -> Tuple[Optional[list], Optional[str]]:
+        """
+        Get all open orders for a user.
+        
+        Args:
+            user_id: User ID
+            is_mainnet: Whether to use mainnet or testnet
+            
+        Returns:
+            Tuple of (list of order dicts or None, error_message or None)
+        """
+        logger.info(f"[HyperLiquid Service] Getting open orders for user {user_id}")
+        
+        client, error = await self.get_trading_client(user_id, is_mainnet)
+        if not client:
+            return None, error or "Failed to get trading client"
+        
+        try:
+            orders = await client.get_open_orders()
+            logger.info(f"[HyperLiquid Service] Found {len(orders)} open orders")
+            return orders, None
+        except Exception as e:
+            logger.exception(f"[HyperLiquid Service] Error getting open orders")
+            return None, str(e)
+    
+    async def withdraw_from_bridge(
+        self,
+        user_id: int,
+        amount_usd: float,
+        is_mainnet: bool = True,
+    ) -> Tuple[bool, Optional[str], Optional[dict]]:
+        """
+        Withdraw USDC from HyperLiquid to Arbitrum.
+        
+        The funds will be withdrawn to the user's main EVM wallet on Arbitrum.
+        Note: ~1 USDC fee will be deducted from the withdrawal amount.
+        
+        Args:
+            user_id: User ID
+            amount_usd: Amount in USD to withdraw
+            is_mainnet: Whether to use mainnet or testnet
+            
+        Returns:
+            Tuple of (success, error_message or None, raw_response or None)
+        """
+        logger.info(f"[HyperLiquid Service] Withdrawing ${amount_usd} for user {user_id}")
+        
+        # Get the account state first to check withdrawable balance
+        account_state, error = await self.get_account_state(user_id, is_mainnet)
+        if not account_state:
+            return False, error or "Failed to get account state", None
+        
+        if account_state.withdrawable < amount_usd:
+            return False, f"Insufficient withdrawable balance. Available: ${account_state.withdrawable:.2f}", None
+        
+        # Get trading client
+        client, error = await self.get_trading_client(user_id, is_mainnet)
+        if not client:
+            return False, error or "Failed to get trading client", None
+        
+        # Get main wallet private key for withdrawal (agents can't withdraw)
+        wallet = await self.db.get_user_wallet(user_id, WalletType.EVM)
+        if not wallet:
+            return False, "No EVM wallet found", None
+        
+        main_wallet_private_key = await self.db.get_wallet_private_key(wallet.id)
+        if not main_wallet_private_key:
+            return False, "Failed to get wallet private key", None
+        
+        # Perform withdrawal with main wallet key
+        success, error, response = await client.withdraw_from_bridge(
+            amount_usd,
+            main_wallet_private_key=main_wallet_private_key,
+        )
+        
+        if success:
+            logger.info(f"[HyperLiquid Service] Withdrawal successful for user {user_id}")
+        else:
+            logger.error(f"[HyperLiquid Service] Withdrawal failed: {error}")
+        
+        return success, error, response
 
 
 # Singleton instance

@@ -8,6 +8,7 @@ from .models import (
     SubscriptionTier,
     HyperliquidApiKey,
     HyperliquidChain,
+    OKXApiKey,
 )
 from .database import Database, get_database, close_database
 from .encryption import encrypt_private_key, decrypt_private_key
@@ -21,6 +22,7 @@ __all__ = [
     "SubscriptionTier",
     "HyperliquidApiKey",
     "HyperliquidChain",
+    "OKXApiKey",
     "Database",
     "get_database",
     "close_database",

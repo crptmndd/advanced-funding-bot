@@ -206,3 +206,38 @@ class HyperliquidApiKey:
             return f"{self.agent_address[:6]}...{self.agent_address[-4:]}"
         return self.agent_address
 
+
+@dataclass
+class OKXApiKey:
+    """
+    OKX API key model.
+    
+    OKX uses standard API key/secret/passphrase authentication.
+    """
+    
+    id: int  # Primary key
+    user_id: int  # Foreign key to User
+    
+    # API credentials (encrypted)
+    encrypted_api_key: str
+    encrypted_secret_key: str
+    encrypted_passphrase: str
+    
+    # API key metadata
+    label: str = "OKX Trading"  # User-defined label
+    
+    # Settings
+    is_sandbox: bool = False  # Whether this is a sandbox/demo key
+    
+    # Status
+    is_active: bool = True
+    
+    # Timestamps
+    created_at: datetime = field(default_factory=datetime.utcnow)
+    updated_at: datetime = field(default_factory=datetime.utcnow)
+    
+    @property
+    def is_valid(self) -> bool:
+        """Check if API key is active."""
+        return self.is_active
+

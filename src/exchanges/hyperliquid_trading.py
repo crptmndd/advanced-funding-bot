@@ -580,6 +580,81 @@ class HyperliquidTradingClient:
             logger.exception(f"[HyperLiquid Trading] Exception setting leverage")
             return False
     
+    async def withdraw_from_bridge(
+        self,
+        amount_usd: float,
+        destination_address: Optional[str] = None,
+        main_wallet_private_key: Optional[str] = None,
+    ) -> Tuple[bool, Optional[str], Optional[Dict]]:
+        """
+        Withdraw USDC from HyperLiquid to Arbitrum bridge.
+        
+        Note: Withdrawals MUST be signed by the main wallet, not an agent.
+        If main_wallet_private_key is provided, it will be used for signing.
+        
+        Args:
+            amount_usd: Amount in USD to withdraw (will be reduced by ~1 USDC fee)
+            destination_address: Optional destination address (defaults to main wallet)
+            main_wallet_private_key: Main wallet private key for signing withdrawal
+            
+        Returns:
+            Tuple of (success, error_message or None, raw_response or None)
+        """
+        dest = destination_address or self.main_wallet_address
+        
+        logger.info(f"[HyperLiquid Trading] Withdrawing ${amount_usd} to {dest[:10]}...")
+        
+        try:
+            # For withdrawal, we need to create a separate Exchange instance with main wallet
+            # because agents don't have permission to withdraw
+            if main_wallet_private_key:
+                # Ensure private key has 0x prefix
+                if not main_wallet_private_key.startswith("0x"):
+                    main_wallet_private_key = "0x" + main_wallet_private_key
+                
+                main_account = Account.from_key(main_wallet_private_key)
+                
+                # Create Exchange instance with main wallet (not agent)
+                withdraw_exchange = Exchange(
+                    wallet=main_account,
+                    base_url=self.api_url,
+                    account_address=self.main_wallet_address,
+                )
+                
+                logger.info(f"[HyperLiquid Trading] Using main wallet for withdrawal")
+                
+                # Use main wallet Exchange for withdrawal
+                response = await asyncio.to_thread(
+                    withdraw_exchange.withdraw_from_bridge,
+                    amount_usd,
+                    dest,
+                )
+            else:
+                # Fallback to agent (will likely fail)
+                logger.warning(
+                    "[HyperLiquid Trading] No main wallet key provided - "
+                    "withdrawal may fail as agents cannot withdraw"
+                )
+                response = await asyncio.to_thread(
+                    self._exchange.withdraw_from_bridge,
+                    amount_usd,
+                    dest,
+                )
+            
+            logger.info(f"[HyperLiquid Trading] Withdraw response: {response}")
+            
+            if response.get("status") == "ok":
+                logger.info(f"[HyperLiquid Trading] Withdrawal initiated successfully")
+                return True, None, response
+            else:
+                error = response.get("response", str(response))
+                logger.error(f"[HyperLiquid Trading] Withdrawal failed: {error}")
+                return False, str(error), response
+                
+        except Exception as e:
+            logger.exception(f"[HyperLiquid Trading] Exception during withdrawal")
+            return False, str(e), None
+    
 async def create_hyperliquid_client_for_user(
     db,
     user_id: int,

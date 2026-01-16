@@ -1,8 +1,13 @@
 """Exchange registry for managing available exchange connectors."""
 
+import asyncio
+import logging
 from typing import Dict, List, Optional, Type
 
 from src.exchanges.base import BaseExchange
+from src.models import ExchangeFundingRates
+
+logger = logging.getLogger(__name__)
 
 # Direct API exchanges (native API, maximum data)
 from src.exchanges.direct import (
@@ -155,6 +160,89 @@ class ExchangeRegistry:
             if hasattr(instance, 'close'):
                 await instance.close()
         cls._instances.clear()
+    
+    @classmethod
+    async def fetch_all_funding_rates(
+        cls,
+        exchanges: Optional[List[str]] = None,
+        timeout: float = 30.0,
+    ) -> List[ExchangeFundingRates]:
+        """
+        Fetch funding rates from all exchanges in parallel.
+        
+        Args:
+            exchanges: Optional list of exchange names to fetch from.
+                       If None, fetches from all available exchanges.
+            timeout: Timeout in seconds for each exchange request.
+            
+        Returns:
+            List of ExchangeFundingRates objects, one per exchange.
+        """
+        # Get exchange instances
+        if exchanges:
+            exchange_instances = {}
+            for name in exchanges:
+                instance = cls.get_exchange(name)
+                if instance and instance.is_available:
+                    exchange_instances[name] = instance
+        else:
+            exchange_instances = cls.get_all_exchanges(only_available=True)
+        
+        if not exchange_instances:
+            logger.warning("No available exchanges to fetch funding rates from")
+            return []
+        
+        logger.info(f"Fetching funding rates from {len(exchange_instances)} exchanges: {list(exchange_instances.keys())}")
+        
+        async def fetch_with_timeout(name: str, exchange: BaseExchange) -> ExchangeFundingRates:
+            """Fetch funding rates with timeout and error handling."""
+            try:
+                result = await asyncio.wait_for(
+                    exchange.fetch_funding_rates(),
+                    timeout=timeout
+                )
+                logger.info(f"[{name}] Fetched {len(result.rates)} funding rates")
+                return result
+            except asyncio.TimeoutError:
+                logger.warning(f"[{name}] Timeout fetching funding rates")
+                return ExchangeFundingRates(
+                    exchange=name,
+                    rates=[],
+                    error=f"Timeout after {timeout}s"
+                )
+            except Exception as e:
+                logger.error(f"[{name}] Error fetching funding rates: {e}")
+                return ExchangeFundingRates(
+                    exchange=name,
+                    rates=[],
+                    error=str(e)
+                )
+        
+        # Fetch from all exchanges in parallel
+        tasks = [
+            fetch_with_timeout(name, exchange)
+            for name, exchange in exchange_instances.items()
+        ]
+        
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Filter out exceptions and return valid results
+        valid_results = []
+        for result in results:
+            if isinstance(result, ExchangeFundingRates):
+                valid_results.append(result)
+            elif isinstance(result, Exception):
+                logger.error(f"Unexpected exception in fetch_all_funding_rates: {result}")
+        
+        total_rates = sum(len(r.rates) for r in valid_results)
+        logger.info(f"Fetched total of {total_rates} funding rates from {len(valid_results)} exchanges")
+        
+        return valid_results
+    
+    @classmethod
+    def get_available_exchanges(cls) -> List[str]:
+        """Get list of available exchange names."""
+        return cls.get_available_names()
 
 
 # Convenience functions

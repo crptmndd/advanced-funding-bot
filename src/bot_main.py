@@ -16,6 +16,7 @@ Environment variables:
 
 import os
 import sys
+import asyncio
 import argparse
 import logging
 
@@ -34,16 +35,25 @@ def setup_logging():
     # Suppress noisy loggers
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("aiohttp").setLevel(logging.WARNING)
     logging.getLogger("aiosqlite").setLevel(logging.WARNING)
     logging.getLogger("asyncio").setLevel(logging.WARNING)
-    logging.getLogger("telegram.ext.Application").setLevel(logging.WARNING)
-    logging.getLogger("telegram.ext.ExtBot").setLevel(logging.WARNING)
-    logging.getLogger("telegram.ext.Updater").setLevel(logging.WARNING)
+    logging.getLogger("aiogram").setLevel(logging.WARNING)
     logging.getLogger("rlp.codec").setLevel(logging.WARNING)
     
     # Make sure our loggers are visible at INFO level
     logging.getLogger("src.bot").setLevel(logging.INFO)
     logging.getLogger("src.database").setLevel(logging.INFO)
+    logging.getLogger("src.exchanges").setLevel(logging.INFO)
+    logging.getLogger("src.services").setLevel(logging.INFO)
+
+
+async def run_bot(token: str):
+    """Run the bot asynchronously."""
+    from src.bot.aiogram_bot import FundingBot
+    
+    bot = FundingBot(token)
+    await bot.run()
 
 
 def main():
@@ -84,21 +94,19 @@ def main():
         sys.exit(1)
     
     print("=" * 60)
-    print("🤖 Funding Rate Arbitrage Bot")
+    print("🤖 Funding Rate Arbitrage Bot (aiogram)")
     print("=" * 60)
     print()
     print("Starting bot...")
     print("Press Ctrl+C to stop")
     print()
     
-    # Import after logging setup
-    from src.bot import FundingBot
-    
     # Run the bot
-    bot = FundingBot(token)
-    bot.run()
+    try:
+        asyncio.run(run_bot(token))
+    except KeyboardInterrupt:
+        print("\n\nBot stopped.")
 
 
 if __name__ == "__main__":
     main()
-
