@@ -1,8 +1,8 @@
 """
-Configuration module for Funding Rate Arbitrage Bot.
+Centralized configuration for the Funding Rate Bot.
 
-Centralizes all configuration constants and provides easy access
-to environment variables and default settings.
+All constants, thresholds, and settings are defined here.
+Values can be overridden via environment variables.
 """
 
 import os
@@ -11,260 +11,174 @@ from typing import List, Optional
 from pathlib import Path
 
 
-# =====================================================================
-# Environment Variables
-# =====================================================================
-
-def _get_env(key: str, default: str = "") -> str:
-    """Get environment variable with default."""
-    return os.getenv(key, default)
+def _env_bool(key: str, default: bool = False) -> bool:
+    """Get boolean from environment variable."""
+    val = os.getenv(key, str(default)).lower()
+    return val in ("true", "1", "yes", "on")
 
 
-def _get_env_int(key: str, default: int) -> int:
-    """Get environment variable as integer."""
-    value = os.getenv(key)
-    if value is None:
-        return default
+def _env_int(key: str, default: int) -> int:
+    """Get integer from environment variable."""
     try:
-        return int(value)
+        return int(os.getenv(key, str(default)))
     except ValueError:
         return default
 
 
-def _get_env_float(key: str, default: float) -> float:
-    """Get environment variable as float."""
-    value = os.getenv(key)
-    if value is None:
-        return default
+def _env_float(key: str, default: float) -> float:
+    """Get float from environment variable."""
     try:
-        return float(value)
+        return float(os.getenv(key, str(default)))
     except ValueError:
         return default
 
 
-def _get_env_bool(key: str, default: bool) -> bool:
-    """Get environment variable as boolean."""
-    value = os.getenv(key)
-    if value is None:
-        return default
-    return value.lower() in ("true", "1", "yes", "on")
-
-
-def _get_env_list(key: str, default: List[str] = None) -> List[str]:
-    """Get environment variable as comma-separated list."""
-    value = os.getenv(key)
-    if value is None:
+def _env_list(key: str, default: Optional[List[str]] = None) -> List[str]:
+    """Get comma-separated list from environment variable."""
+    val = os.getenv(key, "")
+    if not val:
         return default or []
-    return [item.strip() for item in value.split(",") if item.strip()]
+    return [item.strip() for item in val.split(",") if item.strip()]
 
-
-# =====================================================================
-# Bot Configuration
-# =====================================================================
 
 @dataclass
-class BotConfig:
+class TelegramConfig:
     """Telegram bot configuration."""
-    token: str = field(default_factory=lambda: _get_env("TELEGRAM_BOT_TOKEN", ""))
+    bot_token: str = field(default_factory=lambda: os.getenv("TELEGRAM_BOT_TOKEN", ""))
     admin_ids: List[int] = field(default_factory=lambda: [
-        int(x) for x in _get_env_list("TELEGRAM_ADMIN_IDS") if x.isdigit()
+        int(id_) for id_ in _env_list("TELEGRAM_ADMIN_IDS") if id_.isdigit()
     ])
-    
-    # Rate limiting
-    rate_limit_requests: int = field(default_factory=lambda: _get_env_int("BOT_RATE_LIMIT_REQUESTS", 30))
-    rate_limit_period: int = field(default_factory=lambda: _get_env_int("BOT_RATE_LIMIT_PERIOD", 60))
 
-
-# =====================================================================
-# Database Configuration
-# =====================================================================
 
 @dataclass
 class DatabaseConfig:
     """Database configuration."""
-    path: str = field(default_factory=lambda: _get_env(
-        "DATABASE_PATH",
+    path: str = field(default_factory=lambda: os.getenv(
+        "DATABASE_PATH", 
         str(Path(__file__).parent.parent / "data" / "funding_bot.db")
     ))
     
-    # Auto-create HyperLiquid API key (requires deposit first)
-    auto_create_hl_api_key: bool = field(default_factory=lambda: _get_env_bool(
-        "AUTO_CREATE_HL_API_KEY", False
-    ))
-
-
-# =====================================================================
-# Exchange Configuration
-# =====================================================================
 
 @dataclass
-class ExchangeConfig:
-    """Exchange-related configuration."""
+class FundingConfig:
+    """Funding rate related configuration."""
+    # Standard funding interval in hours (most exchanges use 8h)
+    default_interval_hours: int = field(default_factory=lambda: _env_int("FUNDING_INTERVAL_HOURS", 8))
     
-    # Default funding interval in hours (most exchanges use 8h)
-    default_funding_interval_hours: int = field(default_factory=lambda: _get_env_int(
-        "DEFAULT_FUNDING_INTERVAL_HOURS", 8
-    ))
+    # Cache settings
+    cache_enabled: bool = field(default_factory=lambda: _env_bool("FUNDING_CACHE_ENABLED", True))
+    cache_ttl_seconds: int = field(default_factory=lambda: _env_int("FUNDING_CACHE_TTL", 60))  # 1 minute
+    background_refresh_interval: int = field(default_factory=lambda: _env_int("FUNDING_REFRESH_INTERVAL", 120))  # 2 minutes
     
-    # API request timeout in seconds
-    api_timeout: float = field(default_factory=lambda: _get_env_float(
-        "EXCHANGE_API_TIMEOUT", 30.0
-    ))
+    # Request settings
+    fetch_timeout: float = field(default_factory=lambda: _env_float("FUNDING_FETCH_TIMEOUT", 30.0))
     
-    # Default exchanges to fetch from (comma-separated)
-    # If empty, fetches from all available exchanges
-    default_exchanges: List[str] = field(default_factory=lambda: _get_env_list(
-        "DEFAULT_EXCHANGES"
-    ))
+    # Annualization factor for APR calculation
+    # Funding is typically paid 3 times per day (8h intervals)
+    payments_per_day: int = field(default_factory=lambda: _env_int("FUNDING_PAYMENTS_PER_DAY", 3))
     
-    # Exchanges to exclude from fetching
-    excluded_exchanges: List[str] = field(default_factory=lambda: _get_env_list(
-        "EXCLUDED_EXCHANGES"
-    ))
-    
-    # Cache duration for funding rates in seconds
-    funding_rate_cache_ttl: int = field(default_factory=lambda: _get_env_int(
-        "FUNDING_RATE_CACHE_TTL", 300  # 5 minutes
-    ))
-    
-    # Background fetch interval in seconds
-    background_fetch_interval: int = field(default_factory=lambda: _get_env_int(
-        "BACKGROUND_FETCH_INTERVAL", 180  # 3 minutes
-    ))
-    
-    # Enable background fetching
-    enable_background_fetch: bool = field(default_factory=lambda: _get_env_bool(
-        "ENABLE_BACKGROUND_FETCH", True
-    ))
+    @property
+    def annualization_factor(self) -> float:
+        """Factor to convert funding rate to APR."""
+        return self.payments_per_day * 365
 
-
-# =====================================================================
-# Trading Configuration (Default User Settings)
-# =====================================================================
 
 @dataclass
-class TradingDefaults:
-    """Default trading settings for new users."""
+class ArbitrageConfig:
+    """Arbitrage analyzer configuration."""
+    # Default minimum funding spread to consider (0.01 = 0.01%)
+    min_funding_spread: float = field(default_factory=lambda: _env_float("ARB_MIN_FUNDING_SPREAD", 0.01))
     
+    # Default minimum 24h volume in USD
+    min_volume_24h: float = field(default_factory=lambda: _env_float("ARB_MIN_VOLUME_24H", 100_000))
+    
+    # Maximum price spread between exchanges (1.0 = 1%)
+    max_price_spread: float = field(default_factory=lambda: _env_float("ARB_MAX_PRICE_SPREAD", 1.0))
+    
+    # Default number of top opportunities to show
+    default_limit: int = field(default_factory=lambda: _env_int("ARB_DEFAULT_LIMIT", 10))
+
+
+@dataclass  
+class TradingConfig:
+    """Trading configuration and limits."""
     # Default trade amount in USDT
-    trade_amount_usdt: float = field(default_factory=lambda: _get_env_float(
-        "DEFAULT_TRADE_AMOUNT_USDT", 100.0
-    ))
+    default_trade_amount: float = field(default_factory=lambda: _env_float("TRADE_DEFAULT_AMOUNT", 100.0))
     
     # Maximum trade amount in USDT
-    max_trade_amount_usdt: float = field(default_factory=lambda: _get_env_float(
-        "DEFAULT_MAX_TRADE_AMOUNT_USDT", 1000.0
-    ))
+    max_trade_amount: float = field(default_factory=lambda: _env_float("TRADE_MAX_AMOUNT", 10_000.0))
     
-    # Maximum leverage
-    max_leverage: int = field(default_factory=lambda: _get_env_int(
-        "DEFAULT_MAX_LEVERAGE", 10
-    ))
+    # Maximum leverage allowed
+    max_leverage: int = field(default_factory=lambda: _env_int("TRADE_MAX_LEVERAGE", 20))
     
-    # Maximum position size as percent of account
-    max_position_size_percent: float = field(default_factory=lambda: _get_env_float(
-        "DEFAULT_MAX_POSITION_PERCENT", 50.0
-    ))
+    # Default leverage if not specified
+    default_leverage: int = field(default_factory=lambda: _env_int("TRADE_DEFAULT_LEVERAGE", 5))
+    
+    # Maximum position size as percentage of account
+    max_position_percent: float = field(default_factory=lambda: _env_float("TRADE_MAX_POSITION_PERCENT", 50.0))
 
-
-# =====================================================================
-# Arbitrage Configuration (Default Settings)
-# =====================================================================
-
-@dataclass
-class ArbitrageDefaults:
-    """Default arbitrage analyzer settings."""
-    
-    # Minimum funding rate spread to consider (as percentage, e.g., 0.01 = 0.01%)
-    min_funding_spread: float = field(default_factory=lambda: _get_env_float(
-        "DEFAULT_MIN_FUNDING_SPREAD", 0.01
-    ))
-    
-    # Maximum price spread to consider safe (as percentage)
-    max_price_spread: float = field(default_factory=lambda: _get_env_float(
-        "DEFAULT_MAX_PRICE_SPREAD", 1.0
-    ))
-    
-    # Minimum 24h volume in USD
-    min_volume_24h: float = field(default_factory=lambda: _get_env_float(
-        "DEFAULT_MIN_VOLUME_24H", 100000.0
-    ))
-    
-    # Default number of opportunities to show
-    default_limit: int = field(default_factory=lambda: _get_env_int(
-        "DEFAULT_ARBITRAGE_LIMIT", 10
-    ))
-    
-    # Notification threshold for spread (send alert if above this)
-    notify_threshold_spread: float = field(default_factory=lambda: _get_env_float(
-        "DEFAULT_NOTIFY_THRESHOLD_SPREAD", 0.05
-    ))
-
-
-# =====================================================================
-# Network Configuration
-# =====================================================================
 
 @dataclass
 class NetworkConfig:
     """Blockchain network configuration."""
-    
     # Arbitrum RPC URL
-    arbitrum_rpc_url: str = field(default_factory=lambda: _get_env(
-        "ARBITRUM_RPC_URL", "https://arb1.arbitrum.io/rpc"
+    arbitrum_rpc_url: str = field(default_factory=lambda: os.getenv(
+        "ARBITRUM_RPC_URL", 
+        "https://arb1.arbitrum.io/rpc"
     ))
     
-    # HyperLiquid API URLs
-    hyperliquid_mainnet_url: str = field(default_factory=lambda: _get_env(
-        "HYPERLIQUID_MAINNET_URL", "https://api.hyperliquid.xyz"
+    # USDC contracts on Arbitrum
+    usdc_contract: str = field(default_factory=lambda: os.getenv(
+        "USDC_CONTRACT",
+        "0xaf88d065e77c8cC2239327C5EDb3A432268e5831"
     ))
-    hyperliquid_testnet_url: str = field(default_factory=lambda: _get_env(
-        "HYPERLIQUID_TESTNET_URL", "https://api.hyperliquid-testnet.xyz"
+    usdc_e_contract: str = field(default_factory=lambda: os.getenv(
+        "USDC_E_CONTRACT", 
+        "0xFF970A61A04b1cA14834A43f5dE4533eBDDB5CC8"
     ))
-    
-    # USDC contract addresses on Arbitrum
-    usdc_contract: str = "0xaf88d065e77c8cC2239327C5EDb3A432268e5831"
-    usdc_e_contract: str = "0xFF970A61A04b1cA14834A43f5dE4533eBDDB5CC8"
 
-
-# =====================================================================
-# Withdrawal Tracking Configuration
-# =====================================================================
 
 @dataclass
 class WithdrawalConfig:
     """Withdrawal tracking configuration."""
-    
-    # Maximum tracking time in seconds
-    max_tracking_time: int = field(default_factory=lambda: _get_env_int(
-        "WITHDRAWAL_MAX_TRACKING_TIME", 900  # 15 minutes
-    ))
-    
-    # Check interval in seconds
-    check_interval: int = field(default_factory=lambda: _get_env_int(
-        "WITHDRAWAL_CHECK_INTERVAL", 15
-    ))
-    
-    # Required confirmations
-    required_confirmations: int = field(default_factory=lambda: _get_env_int(
-        "WITHDRAWAL_REQUIRED_CONFIRMATIONS", 1
-    ))
+    check_interval: int = field(default_factory=lambda: _env_int("WITHDRAWAL_CHECK_INTERVAL", 15))  # seconds
+    max_tracking_time: int = field(default_factory=lambda: _env_int("WITHDRAWAL_MAX_TRACKING_TIME", 900))  # 15 minutes
+    required_confirmations: int = field(default_factory=lambda: _env_int("WITHDRAWAL_REQUIRED_CONFIRMATIONS", 1))
 
 
-# =====================================================================
-# Main Config Class
-# =====================================================================
+@dataclass
+class ExchangeConfig:
+    """Exchange-specific configuration."""
+    # Exchanges to enable (empty = all)
+    enabled_exchanges: List[str] = field(default_factory=lambda: _env_list("ENABLED_EXCHANGES"))
+    
+    # Exchanges to disable
+    disabled_exchanges: List[str] = field(default_factory=lambda: _env_list("DISABLED_EXCHANGES"))
+    
+    # Use instance caching for exchanges
+    use_cache: bool = field(default_factory=lambda: _env_bool("EXCHANGE_USE_CACHE", True))
+    
+    # Auto-close sessions after fetch
+    auto_close_sessions: bool = field(default_factory=lambda: _env_bool("EXCHANGE_AUTO_CLOSE", True))
+
 
 @dataclass
 class Config:
-    """Main configuration container."""
-    bot: BotConfig = field(default_factory=BotConfig)
+    """Main configuration class."""
+    telegram: TelegramConfig = field(default_factory=TelegramConfig)
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
-    exchange: ExchangeConfig = field(default_factory=ExchangeConfig)
-    trading: TradingDefaults = field(default_factory=TradingDefaults)
-    arbitrage: ArbitrageDefaults = field(default_factory=ArbitrageDefaults)
+    funding: FundingConfig = field(default_factory=FundingConfig)
+    arbitrage: ArbitrageConfig = field(default_factory=ArbitrageConfig)
+    trading: TradingConfig = field(default_factory=TradingConfig)
     network: NetworkConfig = field(default_factory=NetworkConfig)
     withdrawal: WithdrawalConfig = field(default_factory=WithdrawalConfig)
+    exchange: ExchangeConfig = field(default_factory=ExchangeConfig)
+    
+    # Debug mode
+    debug: bool = field(default_factory=lambda: _env_bool("DEBUG", False))
+    
+    # Log level
+    log_level: str = field(default_factory=lambda: os.getenv("LOG_LEVEL", "INFO"))
 
 
 # Global config instance
@@ -272,7 +186,7 @@ _config: Optional[Config] = None
 
 
 def get_config() -> Config:
-    """Get global config instance."""
+    """Get or create global config instance."""
     global _config
     if _config is None:
         _config = Config()
@@ -284,33 +198,4 @@ def reload_config() -> Config:
     global _config
     _config = Config()
     return _config
-
-
-# =====================================================================
-# Convenience accessors
-# =====================================================================
-
-# Shortcuts for commonly used configs
-def get_bot_token() -> str:
-    return get_config().bot.token
-
-
-def get_database_path() -> str:
-    return get_config().database.path
-
-
-def get_funding_interval() -> int:
-    return get_config().exchange.default_funding_interval_hours
-
-
-def get_api_timeout() -> float:
-    return get_config().exchange.api_timeout
-
-
-def get_min_funding_spread() -> float:
-    return get_config().arbitrage.min_funding_spread
-
-
-def get_min_volume_24h() -> float:
-    return get_config().arbitrage.min_volume_24h
 

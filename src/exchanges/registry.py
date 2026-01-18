@@ -6,6 +6,7 @@ from typing import Dict, List, Optional, Type
 
 from src.exchanges.base import BaseExchange
 from src.models import ExchangeFundingRates
+from src.config import get_config
 
 logger = logging.getLogger(__name__)
 
@@ -165,9 +166,9 @@ class ExchangeRegistry:
     async def fetch_all_funding_rates(
         cls,
         exchanges: Optional[List[str]] = None,
-        timeout: float = 30.0,
-        use_cache: bool = True,
-        close_sessions: bool = False,
+        timeout: Optional[float] = None,
+        use_cache: Optional[bool] = None,
+        auto_close: Optional[bool] = None,
     ) -> List[ExchangeFundingRates]:
         """
         Fetch funding rates from all exchanges in parallel.
@@ -176,21 +177,49 @@ class ExchangeRegistry:
             exchanges: Optional list of exchange names to fetch from.
                        If None, fetches from all available exchanges.
             timeout: Timeout in seconds for each exchange request.
-            use_cache: Whether to reuse cached exchange instances (recommended).
-            close_sessions: Whether to close HTTP sessions after fetching.
-                           Set True for one-off fetches, False for repeated use.
+            use_cache: Whether to use cached exchange instances (default from config).
+            auto_close: Whether to close sessions after fetching (default from config).
             
         Returns:
             List of ExchangeFundingRates objects, one per exchange.
         """
-        # Get exchange instances (with caching for efficiency)
-        exchange_instances = {}
-        target_exchanges = exchanges if exchanges else list(cls._exchanges.keys())
+        config = get_config()
         
-        for name in target_exchanges:
-            instance = cls.get_exchange(name, use_cache=use_cache)
-            if instance and instance.is_available:
-                exchange_instances[name] = instance
+        # Use config defaults if not specified
+        if timeout is None:
+            timeout = config.funding.fetch_timeout
+        if use_cache is None:
+            use_cache = config.exchange.use_cache
+        if auto_close is None:
+            auto_close = config.exchange.auto_close_sessions
+        
+        # Get exchange instances (using cache if enabled)
+        instances_to_close = []
+        
+        if exchanges:
+            exchange_instances = {}
+            for name in exchanges:
+                name_lower = name.lower()
+                instance = cls.get_exchange(name_lower, use_cache=use_cache)
+                if instance and instance.is_available:
+                    exchange_instances[name_lower] = instance
+                    if not use_cache:
+                        instances_to_close.append(instance)
+        else:
+            exchange_instances = {}
+            for name in cls._exchanges.keys():
+                # Skip disabled exchanges
+                if config.exchange.disabled_exchanges and name in config.exchange.disabled_exchanges:
+                    continue
+                # Only use enabled if specified
+                if config.exchange.enabled_exchanges and name not in config.exchange.enabled_exchanges:
+                    continue
+                    
+                instance = cls.get_exchange(name, use_cache=use_cache)
+                if instance and instance.is_available:
+                    exchange_instances[name] = instance
+                    if not use_cache:
+                        instances_to_close.append(instance)
         
         if not exchange_instances:
             logger.warning("No available exchanges to fetch funding rates from")
@@ -222,35 +251,37 @@ class ExchangeRegistry:
                     error=str(e)
                 )
         
-        # Fetch from all exchanges in parallel
-        tasks = [
-            fetch_with_timeout(name, exchange)
-            for name, exchange in exchange_instances.items()
-        ]
+        try:
+            # Fetch from all exchanges in parallel
+            tasks = [
+                fetch_with_timeout(name, exchange)
+                for name, exchange in exchange_instances.items()
+            ]
+            
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Filter out exceptions and return valid results
+            valid_results = []
+            for result in results:
+                if isinstance(result, ExchangeFundingRates):
+                    valid_results.append(result)
+                elif isinstance(result, Exception):
+                    logger.error(f"Unexpected exception in fetch_all_funding_rates: {result}")
+            
+            total_rates = sum(len(r.rates) for r in valid_results)
+            logger.info(f"Fetched total of {total_rates} funding rates from {len(valid_results)} exchanges")
+            
+            return valid_results
         
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # Close sessions if requested (to free resources)
-        if close_sessions:
-            for exchange in exchange_instances.values():
-                if hasattr(exchange, 'close'):
+        finally:
+            # Close sessions if auto_close is enabled and not using cache
+            if auto_close and instances_to_close:
+                for instance in instances_to_close:
                     try:
-                        await exchange.close()
+                        if hasattr(instance, 'close'):
+                            await instance.close()
                     except Exception as e:
-                        logger.debug(f"Error closing exchange session: {e}")
-        
-        # Filter out exceptions and return valid results
-        valid_results = []
-        for result in results:
-            if isinstance(result, ExchangeFundingRates):
-                valid_results.append(result)
-            elif isinstance(result, Exception):
-                logger.error(f"Unexpected exception in fetch_all_funding_rates: {result}")
-        
-        total_rates = sum(len(r.rates) for r in valid_results)
-        logger.info(f"Fetched total of {total_rates} funding rates from {len(valid_results)} exchanges")
-        
-        return valid_results
+                        logger.debug(f"Error closing exchange {instance.name}: {e}")
     
     @classmethod
     def get_available_exchanges(cls) -> List[str]:

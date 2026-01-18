@@ -1,8 +1,8 @@
 """
-Funding Rate Cache Service.
+Background funding rate caching service.
 
-Provides background fetching and caching of funding rates from all exchanges.
-This improves response times and reduces API load.
+Periodically fetches funding rates from all exchanges and caches them
+for instant access, reducing API load and latency.
 """
 
 import asyncio
@@ -12,266 +12,251 @@ from typing import Dict, List, Optional
 from dataclasses import dataclass, field
 
 from src.models import ExchangeFundingRates, FundingRateData
-from src.exchanges.registry import ExchangeRegistry
 from src.config import get_config
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
-class CachedFundingRates:
-    """Cached funding rate data with metadata."""
-    rates: List[ExchangeFundingRates] = field(default_factory=list)
-    fetched_at: datetime = field(default_factory=datetime.utcnow)
-    ttl_seconds: int = 300  # 5 minutes default
+class CachedRates:
+    """Cached funding rates with metadata."""
+    rates: List[ExchangeFundingRates]
+    fetched_at: datetime
+    expires_at: datetime
     
     @property
     def is_expired(self) -> bool:
-        """Check if cache has expired."""
-        age = (datetime.utcnow() - self.fetched_at).total_seconds()
-        return age > self.ttl_seconds
+        """Check if cache is expired."""
+        return datetime.utcnow() > self.expires_at
     
     @property
     def age_seconds(self) -> float:
         """Get cache age in seconds."""
         return (datetime.utcnow() - self.fetched_at).total_seconds()
-    
-    @property
-    def total_rates(self) -> int:
-        """Get total number of cached rates."""
-        return sum(len(r.rates) for r in self.rates)
-    
-    @property
-    def exchanges_count(self) -> int:
-        """Get number of exchanges with data."""
-        return len([r for r in self.rates if r.rates])
 
 
 class FundingRateCache:
     """
-    Manages funding rate caching with background updates.
+    Background service for caching funding rates.
     
     Features:
-    - Background periodic fetching from all exchanges
-    - TTL-based cache invalidation
+    - Periodic background refresh
     - Instant access to cached data
-    - Fallback to fresh fetch if cache is empty/expired
+    - TTL-based cache expiration
+    - Per-exchange caching
     """
     
     def __init__(
         self,
         ttl_seconds: Optional[int] = None,
-        fetch_interval: Optional[int] = None,
-        enable_background: Optional[bool] = None,
+        refresh_interval: Optional[int] = None,
     ):
         """
-        Initialize the cache.
+        Initialize funding rate cache.
         
         Args:
-            ttl_seconds: Cache TTL in seconds (default from config)
-            fetch_interval: Background fetch interval in seconds
-            enable_background: Whether to enable background fetching
+            ttl_seconds: Cache time-to-live in seconds
+            refresh_interval: Background refresh interval in seconds
         """
         config = get_config()
         
-        self._ttl_seconds = ttl_seconds or config.exchange.funding_rate_cache_ttl
-        self._fetch_interval = fetch_interval or config.exchange.background_fetch_interval
-        self._enable_background = enable_background if enable_background is not None else config.exchange.enable_background_fetch
+        self._ttl = ttl_seconds or config.funding.cache_ttl_seconds
+        self._refresh_interval = refresh_interval or config.funding.background_refresh_interval
         
-        self._cache: Optional[CachedFundingRates] = None
-        self._background_task: Optional[asyncio.Task] = None
+        self._cache: Optional[CachedRates] = None
+        self._per_exchange_cache: Dict[str, CachedRates] = {}
+        self._refresh_task: Optional[asyncio.Task] = None
         self._running = False
         self._lock = asyncio.Lock()
         
-        # Statistics
-        self._fetch_count = 0
-        self._cache_hits = 0
-        self._cache_misses = 0
-        
-        logger.info(f"[Funding Cache] Initialized (TTL={self._ttl_seconds}s, interval={self._fetch_interval}s)")
+        logger.info(f"[Funding Cache] Initialized (TTL: {self._ttl}s, Refresh: {self._refresh_interval}s)")
     
     async def start(self) -> None:
-        """Start the background fetching task."""
+        """Start background refresh task."""
         if self._running:
             return
         
         self._running = True
-        
-        if self._enable_background:
-            # Initial fetch
-            logger.info("[Funding Cache] Starting background fetch service...")
-            await self._fetch_and_cache()
-            
-            # Start background task
-            self._background_task = asyncio.create_task(self._background_fetch_loop())
-            logger.info("[Funding Cache] Background fetch service started")
-        else:
-            logger.info("[Funding Cache] Background fetching disabled, using on-demand mode")
+        self._refresh_task = asyncio.create_task(self._background_refresh())
+        logger.info("[Funding Cache] Background refresh started")
     
     async def stop(self) -> None:
-        """Stop the background fetching task."""
+        """Stop background refresh task."""
         self._running = False
         
-        if self._background_task:
-            self._background_task.cancel()
+        if self._refresh_task:
+            self._refresh_task.cancel()
             try:
-                await self._background_task
+                await self._refresh_task
             except asyncio.CancelledError:
                 pass
-            self._background_task = None
+            self._refresh_task = None
         
-        # Close all exchange sessions
-        await ExchangeRegistry.close_all()
-        
-        logger.info("[Funding Cache] Stopped")
+        logger.info("[Funding Cache] Background refresh stopped")
     
-    async def get_rates(
+    async def _background_refresh(self) -> None:
+        """Background task to periodically refresh cache."""
+        # Import here to avoid circular imports
+        from src.exchanges.registry import ExchangeRegistry
+        
+        while self._running:
+            try:
+                logger.debug("[Funding Cache] Refreshing cache...")
+                
+                # Fetch all rates using cached exchange instances
+                rates = await ExchangeRegistry.fetch_all_funding_rates(
+                    use_cache=True,
+                    auto_close=False,  # Keep sessions alive for reuse
+                )
+                
+                # Update cache
+                async with self._lock:
+                    now = datetime.utcnow()
+                    self._cache = CachedRates(
+                        rates=rates,
+                        fetched_at=now,
+                        expires_at=now + timedelta(seconds=self._ttl),
+                    )
+                    
+                    # Also update per-exchange cache
+                    for exchange_rates in rates:
+                        self._per_exchange_cache[exchange_rates.exchange] = CachedRates(
+                            rates=[exchange_rates],
+                            fetched_at=now,
+                            expires_at=now + timedelta(seconds=self._ttl),
+                        )
+                
+                total_rates = sum(len(r.rates) for r in rates)
+                logger.info(
+                    f"[Funding Cache] Refreshed: {total_rates} rates from {len(rates)} exchanges"
+                )
+                
+            except Exception as e:
+                logger.error(f"[Funding Cache] Refresh error: {e}")
+            
+            # Wait for next refresh
+            await asyncio.sleep(self._refresh_interval)
+    
+    async def get_all_rates(
         self,
         exchanges: Optional[List[str]] = None,
         force_refresh: bool = False,
     ) -> List[ExchangeFundingRates]:
         """
-        Get funding rates, using cache if available.
+        Get cached funding rates.
         
         Args:
             exchanges: Optional list of exchanges to filter
-            force_refresh: Force fetching fresh data
+            force_refresh: Force a fresh fetch instead of using cache
             
         Returns:
             List of ExchangeFundingRates
         """
-        # Check if we need to refresh
+        # Force refresh if requested or cache is empty/expired
         if force_refresh or self._cache is None or self._cache.is_expired:
-            self._cache_misses += 1
-            await self._fetch_and_cache()
-        else:
-            self._cache_hits += 1
+            await self._refresh_now(exchanges)
         
-        if self._cache is None:
-            return []
-        
-        # Filter by exchanges if specified
-        if exchanges:
-            exchanges_lower = [e.lower() for e in exchanges]
-            return [r for r in self._cache.rates if r.exchange.lower() in exchanges_lower]
-        
-        return self._cache.rates
+        async with self._lock:
+            if self._cache is None:
+                return []
+            
+            rates = self._cache.rates
+            
+            # Filter by exchanges if specified
+            if exchanges:
+                exchanges_lower = [e.lower() for e in exchanges]
+                rates = [r for r in rates if r.exchange.lower() in exchanges_lower]
+            
+            return rates
     
-    async def get_rate(
+    async def get_exchange_rates(
         self,
-        symbol: str,
-        exchange: Optional[str] = None,
-    ) -> Optional[FundingRateData]:
+        exchange: str,
+        force_refresh: bool = False,
+    ) -> Optional[ExchangeFundingRates]:
         """
-        Get funding rate for a specific symbol.
+        Get cached rates for a specific exchange.
         
         Args:
-            symbol: Symbol to look up (e.g., "BTC/USDT:USDT")
-            exchange: Optional exchange to filter by
+            exchange: Exchange name
+            force_refresh: Force a fresh fetch
             
         Returns:
-            FundingRateData or None
+            ExchangeFundingRates or None
         """
-        rates = await self.get_rates(exchanges=[exchange] if exchange else None)
+        exchange_lower = exchange.lower()
         
-        symbol_normalized = symbol.upper().replace("-", "/")
+        # Check per-exchange cache
+        if not force_refresh and exchange_lower in self._per_exchange_cache:
+            cached = self._per_exchange_cache[exchange_lower]
+            if not cached.is_expired:
+                return cached.rates[0] if cached.rates else None
         
-        for exchange_rates in rates:
-            for rate in exchange_rates.rates:
-                if rate.symbol.upper() == symbol_normalized:
-                    return rate
-        
-        return None
+        # Fall back to full cache
+        all_rates = await self.get_all_rates(exchanges=[exchange], force_refresh=force_refresh)
+        return all_rates[0] if all_rates else None
     
-    async def get_rates_by_symbol(self, symbol: str) -> Dict[str, FundingRateData]:
-        """
-        Get funding rates for a symbol across all exchanges.
+    async def _refresh_now(self, exchanges: Optional[List[str]] = None) -> None:
+        """Immediately refresh cache."""
+        from src.exchanges.registry import ExchangeRegistry
         
-        Args:
-            symbol: Symbol to look up
+        try:
+            rates = await ExchangeRegistry.fetch_all_funding_rates(
+                exchanges=exchanges,
+                use_cache=True,
+                auto_close=False,
+            )
             
-        Returns:
-            Dictionary mapping exchange name to FundingRateData
-        """
-        rates = await self.get_rates()
-        result = {}
-        
-        symbol_normalized = symbol.upper().replace("-", "/")
-        
-        for exchange_rates in rates:
-            for rate in exchange_rates.rates:
-                if rate.symbol.upper() == symbol_normalized:
-                    result[exchange_rates.exchange] = rate
-                    break
-        
-        return result
+            async with self._lock:
+                now = datetime.utcnow()
+                self._cache = CachedRates(
+                    rates=rates,
+                    fetched_at=now,
+                    expires_at=now + timedelta(seconds=self._ttl),
+                )
+                
+                for exchange_rates in rates:
+                    self._per_exchange_cache[exchange_rates.exchange] = CachedRates(
+                        rates=[exchange_rates],
+                        fetched_at=now,
+                        expires_at=now + timedelta(seconds=self._ttl),
+                    )
+        except Exception as e:
+            logger.error(f"[Funding Cache] Refresh error: {e}")
+    
+    @property
+    def is_cached(self) -> bool:
+        """Check if data is cached and valid."""
+        return self._cache is not None and not self._cache.is_expired
+    
+    @property
+    def cache_age(self) -> Optional[float]:
+        """Get cache age in seconds, or None if not cached."""
+        if self._cache is None:
+            return None
+        return self._cache.age_seconds
     
     def get_cache_info(self) -> dict:
-        """Get cache statistics and info."""
+        """Get cache status information."""
+        if self._cache is None:
+            return {
+                "cached": False,
+                "age_seconds": None,
+                "expires_in_seconds": None,
+                "exchanges_cached": 0,
+                "total_rates": 0,
+            }
+        
         return {
-            "has_data": self._cache is not None and bool(self._cache.rates),
-            "is_expired": self._cache.is_expired if self._cache else True,
-            "age_seconds": self._cache.age_seconds if self._cache else None,
-            "total_rates": self._cache.total_rates if self._cache else 0,
-            "exchanges_count": self._cache.exchanges_count if self._cache else 0,
-            "fetch_count": self._fetch_count,
-            "cache_hits": self._cache_hits,
-            "cache_misses": self._cache_misses,
-            "hit_rate": self._cache_hits / max(1, self._cache_hits + self._cache_misses),
-            "ttl_seconds": self._ttl_seconds,
-            "background_enabled": self._enable_background,
-            "is_running": self._running,
+            "cached": True,
+            "age_seconds": self._cache.age_seconds,
+            "expires_in_seconds": max(0, (self._cache.expires_at - datetime.utcnow()).total_seconds()),
+            "exchanges_cached": len(self._cache.rates),
+            "total_rates": sum(len(r.rates) for r in self._cache.rates),
         }
-    
-    async def _fetch_and_cache(self) -> None:
-        """Fetch funding rates from all exchanges and cache."""
-        async with self._lock:
-            try:
-                logger.debug("[Funding Cache] Fetching funding rates from all exchanges...")
-                
-                rates = await ExchangeRegistry.fetch_all_funding_rates(
-                    use_cache=True,  # Reuse exchange instances
-                    close_sessions=False,  # Keep sessions open for next fetch
-                )
-                
-                self._cache = CachedFundingRates(
-                    rates=rates,
-                    fetched_at=datetime.utcnow(),
-                    ttl_seconds=self._ttl_seconds,
-                )
-                
-                self._fetch_count += 1
-                
-                logger.info(
-                    f"[Funding Cache] Cached {self._cache.total_rates} rates "
-                    f"from {self._cache.exchanges_count} exchanges"
-                )
-                
-            except Exception as e:
-                logger.error(f"[Funding Cache] Error fetching rates: {e}")
-    
-    async def _background_fetch_loop(self) -> None:
-        """Background loop for periodic fetching."""
-        while self._running:
-            try:
-                await asyncio.sleep(self._fetch_interval)
-                
-                if not self._running:
-                    break
-                
-                await self._fetch_and_cache()
-                
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"[Funding Cache] Background fetch error: {e}")
-                await asyncio.sleep(30)  # Wait before retry
 
 
-# =====================================================================
-# Global instance
-# =====================================================================
-
+# Global cache instance
 _cache: Optional[FundingRateCache] = None
 
 
@@ -284,16 +269,15 @@ def get_funding_cache() -> FundingRateCache:
 
 
 async def start_funding_cache() -> FundingRateCache:
-    """Start the funding cache service."""
+    """Start the global funding cache background task."""
     cache = get_funding_cache()
     await cache.start()
     return cache
 
 
 async def stop_funding_cache() -> None:
-    """Stop the funding cache service."""
+    """Stop the global funding cache background task."""
     global _cache
     if _cache is not None:
         await _cache.stop()
-        _cache = None
 

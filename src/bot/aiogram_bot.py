@@ -40,9 +40,9 @@ from src.services.arbitrage_analyzer import ArbitrageAnalyzer, AnalyzerConfig
 from src.services.hyperliquid_service import HyperliquidService
 from src.services.okx_service import OKXService
 from src.services.withdrawal_tracker import WithdrawalTracker, get_withdrawal_tracker
-from src.services.funding_cache import FundingRateCache, get_funding_cache, start_funding_cache, stop_funding_cache
-from src.database import Database, get_database, WalletType, decrypt_private_key
+from src.services.funding_cache import FundingRateCache, get_funding_cache, start_funding_cache
 from src.config import get_config
+from src.database import Database, get_database, WalletType, decrypt_private_key
 from .formatters import TelegramFormatter
 
 logger = logging.getLogger(__name__)
@@ -142,7 +142,6 @@ class FundingBot:
         self.db: Optional[Database] = None
         self.hl_service: Optional[HyperliquidService] = None
         self.okx_service: Optional[OKXService] = None
-        self.funding_cache: Optional[FundingRateCache] = None
         
         # Register handlers
         self._register_handlers()
@@ -205,7 +204,7 @@ class FundingBot:
         self.router.callback_query.register(self.handle_deposit_callback, F.data.startswith("deposit_"))
         self.router.callback_query.register(self.handle_bridge_callback, F.data.startswith("bridge_"))
         self.router.callback_query.register(self.handle_export_callback, F.data.startswith("export_"))
-        self.router.callback_query.register(self.handle_settings_callback, F.data.startswith("setting_"))
+        self.router.callback_query.register(self.handle_settings_callback, F.data.startswith("settings_"))
         
         # Add router to dispatcher
         self.dp.include_router(self.router)
@@ -226,14 +225,11 @@ class FundingBot:
         self.withdrawal_tracker.set_notification_callback(self._send_withdrawal_notification)
         logger.info("Withdrawal tracker initialized")
         
-        # Initialize and start funding rate cache (background fetching)
+        # Start funding rate cache if enabled
         config = get_config()
-        self.funding_cache = get_funding_cache()
-        if config.exchange.enable_background_fetch:
-            await self.funding_cache.start()
-            logger.info("Funding rate cache started (background mode)")
-        else:
-            logger.info("Funding rate cache initialized (on-demand mode)")
+        if config.funding.cache_enabled:
+            self.funding_cache = await start_funding_cache()
+            logger.info("Funding rate cache started")
         
         # Set bot commands
         commands = [
@@ -245,6 +241,7 @@ class FundingBot:
             BotCommand(command="bridge", description="Deposit USDC"),
             BotCommand(command="wallet", description="View wallets"),
             BotCommand(command="settings", description="Settings"),
+            BotCommand(command="set", description="Update a setting"),
         ]
         await self.bot.set_my_commands(commands)
     
@@ -329,8 +326,6 @@ class FundingBot:
         
         await self._ensure_user(user.id, user.username)
         
-        loading_msg = await message.answer("⏳ Fetching funding rates...")
-        
         try:
             # Parse arguments
             exchanges = []
@@ -345,30 +340,38 @@ class FundingBot:
                 else:
                     exchanges.append(arg.lower())
             
-            # Get rates from cache (instant if cached)
-            all_rates = await self.funding_cache.get_rates(
-                exchanges=exchanges if exchanges else None,
-                force_refresh=force_refresh,
-            )
+            # Check if cache is available
+            config = get_config()
+            cache = get_funding_cache()
+            
+            if config.funding.cache_enabled and cache.is_cached and not force_refresh:
+                # Use cached data
+                cache_info = cache.get_cache_info()
+                loading_msg = await message.answer(
+                    f"📊 Loading rates from cache (updated {int(cache_info['age_seconds'])}s ago)..."
+                )
+                all_rates = await cache.get_all_rates(
+                    exchanges=exchanges if exchanges else None,
+                    force_refresh=False,
+                )
+            else:
+                loading_msg = await message.answer("⏳ Fetching funding rates...")
+                # Fetch fresh data
+                all_rates = await ExchangeRegistry.fetch_all_funding_rates(
+                    exchanges=exchanges if exchanges else None,
+                    use_cache=True,
+                )
             
             if not all_rates:
                 await loading_msg.edit_text("❌ No funding rates available.")
                 return
             
-            # Add cache info to response
-            cache_info = self.funding_cache.get_cache_info()
-            cache_age = int(cache_info.get("age_seconds", 0))
-            
             text = self.formatter.format_funding_rates(all_rates, limit)
-            
-            # Append cache info
-            text += f"\n<i>📊 Cached {cache_age}s ago | /rates refresh to update</i>"
-            
             await loading_msg.edit_text(text)
             
         except Exception as e:
             logger.exception("[/rates] Error")
-            await loading_msg.edit_text(f"❌ Error: {str(e)}")
+            await message.answer(f"❌ Error: {str(e)}")
     
     async def arbitrage_command(self, message: Message) -> None:
         """Handle /arbitrage command with optional exchange filtering."""
@@ -384,13 +387,10 @@ class FundingBot:
         # Example: /arbitrage okx hyperliquid 15
         limit = 10
         exchange_filter = []
-        force_refresh = False
         
         for arg in args:
             if arg.isdigit():
                 limit = min(int(arg), 30)
-            elif arg.lower() == "refresh":
-                force_refresh = True
             else:
                 # Normalize exchange name
                 exchange_name = arg.lower()
@@ -416,11 +416,15 @@ class FundingBot:
         loading_msg = await message.answer(f"⏳ Analyzing arbitrage opportunities{filter_text}...")
         
         try:
-            # Get rates from cache (instant if cached)
-            all_rates = await self.funding_cache.get_rates(
-                exchanges=exchange_filter if exchange_filter else None,
-                force_refresh=force_refresh,
-            )
+            # Fetch rates - pass exchange filter to fetch only from specified exchanges
+            registry = ExchangeRegistry()
+            
+            if exchange_filter:
+                # Fetch only from specified exchanges
+                all_rates = await registry.fetch_all_funding_rates(exchanges=exchange_filter)
+            else:
+                # Fetch from all exchanges
+                all_rates = await registry.fetch_all_funding_rates()
             
             if not all_rates:
                 if exchange_filter:
@@ -434,11 +438,11 @@ class FundingBot:
                 return
             
             # Analyze - all_rates is List[ExchangeFundingRates]
-            analyzer_config = AnalyzerConfig(
+            config = AnalyzerConfig(
                 min_funding_spread=settings.min_funding_spread,
                 min_volume_24h=settings.min_volume_24h,
             )
-            analyzer = ArbitrageAnalyzer(analyzer_config)
+            analyzer = ArbitrageAnalyzer(config)
             opportunities = analyzer.find_opportunities(all_rates, limit)
             
             if not opportunities:
@@ -457,11 +461,6 @@ class FundingBot:
                     "💹 <b>Arbitrage Opportunities</b>",
                     f"💹 <b>Arbitrage: {' vs '.join([e.upper() for e in exchange_filter])}</b>"
                 )
-            
-            # Add cache info
-            cache_info = self.funding_cache.get_cache_info()
-            cache_age = int(cache_info.get("age_seconds", 0))
-            text += f"\n<i>📊 Data cached {cache_age}s ago</i>"
             
             await loading_msg.edit_text(text)
             
@@ -504,45 +503,35 @@ class FundingBot:
         settings = await self.db.get_user_settings(db_user.id)
         
         text = self.formatter.format_settings(settings)
-        
-        # Add inline keyboard for quick settings
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [
-                InlineKeyboardButton(text="📊 Min Spread", callback_data="setting_spread"),
-                InlineKeyboardButton(text="📈 Volume", callback_data="setting_volume"),
-            ],
-            [
-                InlineKeyboardButton(text="💰 Trade Amount", callback_data="setting_amount"),
-                InlineKeyboardButton(text="⚡ Leverage", callback_data="setting_leverage"),
-            ],
-            [
-                InlineKeyboardButton(text="🔄 Reset to Defaults", callback_data="setting_reset"),
-            ],
-        ])
-        
-        await message.answer(text, reply_markup=keyboard)
+        await message.answer(text)
     
     async def set_command(self, message: Message) -> None:
-        """Handle /set command."""
+        """Handle /set command to customize trading settings."""
         user = message.from_user
         args = message.text.split()[1:] if message.text else []
         
         await self._ensure_user(user.id, user.username)
         
         if len(args) < 2:
+            config = get_config()
             await message.answer(
-                "❌ <b>Usage:</b> <code>/set &lt;setting&gt; &lt;value&gt;</code>\n\n"
-                "<b>Available settings:</b>\n"
+                "⚙️ <b>Settings Configuration</b>\n\n"
+                "<b>Usage:</b> <code>/set &lt;setting&gt; &lt;value&gt;</code>\n\n"
+                "<b>Trading Settings:</b>\n"
                 "• <code>amount</code> - Default trade amount (USDT)\n"
                 "• <code>maxamount</code> - Max trade amount (USDT)\n"
-                "• <code>leverage</code> - Max leverage (1-100)\n"
+                f"• <code>leverage</code> - Max leverage (1-{config.trading.max_leverage})\n\n"
+                "<b>Arbitrage Filters:</b>\n"
                 "• <code>spread</code> - Min funding spread (%, e.g. 0.01)\n"
                 "• <code>volume</code> - Min 24h volume (USD)\n"
-                "• <code>notify</code> - Notify threshold (%, e.g. 0.05)\n\n"
+                "• <code>pricespread</code> - Max price spread (%)\n\n"
+                "<b>Notifications:</b>\n"
+                "• <code>notify</code> - Enable notifications (1/0)\n"
+                "• <code>threshold</code> - Notify threshold spread (%)\n\n"
                 "<b>Examples:</b>\n"
-                "<code>/set leverage 20</code>\n"
-                "<code>/set spread 0.02</code>\n"
-                "<code>/set volume 500000</code>"
+                "• <code>/set leverage 20</code>\n"
+                "• <code>/set spread 0.02</code>\n"
+                "• <code>/set volume 500000</code>"
             )
             return
         
@@ -554,19 +543,25 @@ class FundingBot:
             return
         
         db_user = await self.db.get_user(user.id)
+        config = get_config()
         
         # Map setting names to database field names
         setting_map = {
-            "amount": ("trade_amount_usdt", 1, 100000, "Trade amount"),
-            "maxamount": ("max_trade_amount_usdt", 1, 1000000, "Max trade amount"),
-            "leverage": ("max_leverage", 1, 100, "Max leverage"),
-            "spread": ("min_funding_spread", 0.001, 10.0, "Min funding spread"),
+            "amount": ("trade_amount_usdt", 1, config.trading.max_trade_amount, "Trade amount"),
+            "maxamount": ("max_trade_amount_usdt", 1, 100000, "Max trade amount"),
+            "leverage": ("max_leverage", 1, config.trading.max_leverage, "Max leverage"),
+            "spread": ("min_funding_spread", 0, 10, "Min funding spread"),
             "volume": ("min_volume_24h", 0, 100000000, "Min 24h volume"),
-            "notify": ("notify_threshold_spread", 0.001, 10.0, "Notify threshold"),
+            "pricespread": ("max_price_spread", 0, 10, "Max price spread"),
+            "notify": ("notify_opportunities", 0, 1, "Notify opportunities"),
+            "threshold": ("notify_threshold_spread", 0, 10, "Notify threshold"),
         }
         
         if setting_name not in setting_map:
-            await message.answer(f"❌ Unknown setting: {setting_name}")
+            await message.answer(
+                f"❌ Unknown setting: <code>{setting_name}</code>\n\n"
+                "Use <code>/set</code> to see available settings."
+            )
             return
         
         db_field, min_val, max_val, display_name = setting_map[setting_name]
@@ -576,12 +571,18 @@ class FundingBot:
             await message.answer(f"❌ {display_name} must be between {min_val} and {max_val}")
             return
         
-        # Update
+        # Convert to int for integer fields
+        if db_field in ("max_leverage", "notify_opportunities"):
+            value = int(value)
+        
+        # Update setting
         try:
             await self.db.update_user_settings(db_user.id, **{db_field: value})
-            await message.answer(f"✅ <b>{display_name}</b> updated to <code>{value}</code>")
+            await message.answer(
+                f"✅ <b>{display_name}</b> updated to <code>{value}</code>"
+            )
         except Exception as e:
-            logger.error(f"Failed to update setting: {e}")
+            logger.error(f"[/set] Error updating setting: {e}")
             await message.answer("❌ Failed to update setting")
     
     # ============================================================
@@ -1808,9 +1809,33 @@ class FundingBot:
         await self.wallet_command(new_message)
     
     async def handle_settings_button(self, message: Message) -> None:
-        """Handle Settings button."""
-        new_message = message.model_copy(update={"text": "/settings"})
-        await self.settings_command(new_message)
+        """Handle Settings button - show settings with inline options."""
+        user = message.from_user
+        await self._ensure_user(user.id, user.username)
+        
+        db_user = await self.db.get_user(user.id)
+        settings = await self.db.get_user_settings(db_user.id)
+        
+        # Create inline keyboard for quick settings
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="💰 Trade Amount", callback_data="settings_amount"),
+                InlineKeyboardButton(text="📊 Leverage", callback_data="settings_leverage"),
+            ],
+            [
+                InlineKeyboardButton(text="📈 Min Spread", callback_data="settings_spread"),
+                InlineKeyboardButton(text="💵 Min Volume", callback_data="settings_volume"),
+            ],
+            [
+                InlineKeyboardButton(text="🔔 Notifications", callback_data="settings_notify"),
+            ],
+        ])
+        
+        text = self.formatter.format_settings(settings)
+        text += "\n\n<i>Tap a button to change a setting, or use:</i>\n"
+        text += "<code>/set &lt;setting&gt; &lt;value&gt;</code>"
+        
+        await message.answer(text, reply_markup=keyboard)
     
     async def handle_help_button(self, message: Message) -> None:
         """Handle Help button."""
@@ -2012,69 +2037,153 @@ class FundingBot:
         
         db_user = await self.db.get_user(user_id)
         settings = await self.db.get_user_settings(db_user.id)
+        config = get_config()
         
-        if data == "setting_spread":
-            await callback.message.answer(
-                "📊 <b>Minimum Funding Spread</b>\n\n"
-                f"Current: <code>{settings.min_funding_spread}%</code>\n\n"
-                "The minimum spread between funding rates to show opportunities.\n\n"
-                "<b>Examples:</b>\n"
-                "<code>/set spread 0.01</code> - Show 0.01%+ spreads\n"
-                "<code>/set spread 0.05</code> - Show 0.05%+ spreads"
-            )
+        # Define setting info
+        setting_info = {
+            "settings_amount": {
+                "name": "Trade Amount",
+                "field": "trade_amount_usdt",
+                "current": settings.trade_amount_usdt if settings else 100,
+                "unit": "USDT",
+                "options": [50, 100, 250, 500, 1000],
+            },
+            "settings_leverage": {
+                "name": "Max Leverage",
+                "field": "max_leverage",
+                "current": settings.max_leverage if settings else 10,
+                "unit": "x",
+                "options": [3, 5, 10, 15, 20],
+            },
+            "settings_spread": {
+                "name": "Min Funding Spread",
+                "field": "min_funding_spread",
+                "current": settings.min_funding_spread if settings else 0.01,
+                "unit": "%",
+                "options": [0.005, 0.01, 0.02, 0.05, 0.1],
+            },
+            "settings_volume": {
+                "name": "Min 24h Volume",
+                "field": "min_volume_24h",
+                "current": settings.min_volume_24h if settings else 100000,
+                "unit": "USD",
+                "options": [50000, 100000, 250000, 500000, 1000000],
+            },
+            "settings_notify": {
+                "name": "Notifications",
+                "field": "notify_opportunities",
+                "current": 1 if settings and settings.notify_opportunities else 0,
+                "unit": "",
+                "options": [0, 1],
+            },
+        }
         
-        elif data == "setting_volume":
-            await callback.message.answer(
-                "📈 <b>Minimum 24h Volume</b>\n\n"
-                f"Current: <code>${settings.min_volume_24h:,.0f}</code>\n\n"
-                "Filter out low-liquidity pairs.\n\n"
-                "<b>Examples:</b>\n"
-                "<code>/set volume 100000</code> - $100k+ volume\n"
-                "<code>/set volume 1000000</code> - $1M+ volume"
-            )
-        
-        elif data == "setting_amount":
-            await callback.message.answer(
-                "💰 <b>Trade Amount</b>\n\n"
-                f"Default: <code>${settings.trade_amount_usdt}</code>\n"
-                f"Maximum: <code>${settings.max_trade_amount_usdt}</code>\n\n"
-                "Your default margin amount for trades.\n\n"
-                "<b>Examples:</b>\n"
-                "<code>/set amount 50</code> - $50 default\n"
-                "<code>/set maxamount 500</code> - $500 max"
-            )
-        
-        elif data == "setting_leverage":
-            await callback.message.answer(
-                "⚡ <b>Maximum Leverage</b>\n\n"
-                f"Current: <code>{settings.max_leverage}x</code>\n\n"
-                "Your maximum allowed leverage for trades.\n\n"
-                "<b>Examples:</b>\n"
-                "<code>/set leverage 5</code> - Max 5x\n"
-                "<code>/set leverage 20</code> - Max 20x"
-            )
-        
-        elif data == "setting_reset":
-            # Reset to defaults from config
-            config = get_config()
-            await self.db.update_user_settings(
-                db_user.id,
-                trade_amount_usdt=config.trading.trade_amount_usdt,
-                max_trade_amount_usdt=config.trading.max_trade_amount_usdt,
-                max_leverage=config.trading.max_leverage,
-                min_funding_spread=config.arbitrage.min_funding_spread,
-                min_volume_24h=config.arbitrage.min_volume_24h,
-                notify_threshold_spread=config.arbitrage.notify_threshold_spread,
-            )
+        # Check if setting a value
+        if "_set_" in data:
+            # Format: settings_amount_set_500
+            parts = data.split("_set_")
+            setting_key = parts[0]
+            value = float(parts[1])
             
-            await callback.message.answer(
-                "✅ <b>Settings Reset to Defaults</b>\n\n"
-                f"Trade amount: ${config.trading.trade_amount_usdt}\n"
-                f"Max amount: ${config.trading.max_trade_amount_usdt}\n"
-                f"Max leverage: {config.trading.max_leverage}x\n"
-                f"Min spread: {config.arbitrage.min_funding_spread}%\n"
-                f"Min volume: ${config.arbitrage.min_volume_24h:,.0f}\n"
+            if setting_key in setting_info:
+                info = setting_info[setting_key]
+                
+                # Convert to int for specific fields
+                if info["field"] in ("max_leverage", "notify_opportunities"):
+                    value = int(value)
+                
+                await self.db.update_user_settings(db_user.id, **{info["field"]: value})
+                
+                # Format display value
+                if info["field"] == "notify_opportunities":
+                    display = "ON ✅" if value else "OFF ❌"
+                elif info["field"] == "min_volume_24h":
+                    display = f"${int(value):,}"
+                else:
+                    display = f"{value}{info['unit']}"
+                
+                await callback.message.edit_text(
+                    f"✅ <b>{info['name']}</b> set to <code>{display}</code>\n\n"
+                    f"Use ⚙️ Settings to view all settings."
+                )
+            return
+        
+        # Show options for the setting
+        if data in setting_info:
+            info = setting_info[data]
+            
+            # Create buttons for options
+            buttons = []
+            row = []
+            
+            for opt in info["options"]:
+                # Format button text
+                if info["field"] == "notify_opportunities":
+                    text = "ON ✅" if opt else "OFF ❌"
+                elif info["field"] == "min_volume_24h":
+                    text = f"${int(opt/1000)}K"
+                else:
+                    text = f"{opt}{info['unit']}"
+                
+                # Highlight current value
+                if opt == info["current"]:
+                    text = f"• {text} •"
+                
+                row.append(InlineKeyboardButton(
+                    text=text,
+                    callback_data=f"{data}_set_{opt}"
+                ))
+                
+                if len(row) >= 3:
+                    buttons.append(row)
+                    row = []
+            
+            if row:
+                buttons.append(row)
+            
+            # Add back button
+            buttons.append([InlineKeyboardButton(text="🔙 Back", callback_data="settings_back")])
+            
+            keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+            
+            # Format current value for display
+            if info["field"] == "notify_opportunities":
+                current_display = "ON ✅" if info["current"] else "OFF ❌"
+            elif info["field"] == "min_volume_24h":
+                current_display = f"${int(info['current']):,}"
+            else:
+                current_display = f"{info['current']}{info['unit']}"
+            
+            await callback.message.edit_text(
+                f"⚙️ <b>{info['name']}</b>\n\n"
+                f"Current: <code>{current_display}</code>\n\n"
+                f"Select new value:",
+                reply_markup=keyboard
             )
+            return
+        
+        # Back to main settings
+        if data == "settings_back":
+            settings = await self.db.get_user_settings(db_user.id)
+            
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="💰 Trade Amount", callback_data="settings_amount"),
+                    InlineKeyboardButton(text="📊 Leverage", callback_data="settings_leverage"),
+                ],
+                [
+                    InlineKeyboardButton(text="📈 Min Spread", callback_data="settings_spread"),
+                    InlineKeyboardButton(text="💵 Min Volume", callback_data="settings_volume"),
+                ],
+                [
+                    InlineKeyboardButton(text="🔔 Notifications", callback_data="settings_notify"),
+                ],
+            ])
+            
+            text = self.formatter.format_settings(settings)
+            text += "\n\n<i>Tap a button to change a setting</i>"
+            
+            await callback.message.edit_text(text, reply_markup=keyboard)
     
     async def _perform_deposit(self, callback: CallbackQuery) -> None:
         """Perform USDC deposit to HyperLiquid."""
@@ -2181,12 +2290,14 @@ class FundingBot:
         try:
             await self.dp.start_polling(self.bot, allowed_updates=["message", "callback_query"])
         finally:
-            # Cleanup resources
-            if self.funding_cache:
-                await self.funding_cache.stop()
+            # Cleanup
+            config = get_config()
+            if config.funding.cache_enabled and hasattr(self, 'funding_cache'):
+                from src.services.funding_cache import stop_funding_cache
+                await stop_funding_cache()
                 logger.info("Funding cache stopped")
             
-            # Close all exchange sessions
+            # Close exchange sessions
             await ExchangeRegistry.close_all()
             logger.info("Exchange sessions closed")
             
