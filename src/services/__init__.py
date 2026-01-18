@@ -15,6 +15,12 @@ from .withdrawal_tracker import (
     WithdrawalInfo,
     TransactionStatus,
 )
+from .funding_cache import (
+    FundingRateCache,
+    get_funding_cache,
+    start_funding_cache,
+    stop_funding_cache,
+)
 
 __all__ = [
     "ArbitrageAnalyzer",
@@ -26,5 +32,9 @@ __all__ = [
     "get_withdrawal_tracker",
     "WithdrawalInfo",
     "TransactionStatus",
+    "FundingRateCache",
+    "get_funding_cache",
+    "start_funding_cache",
+    "stop_funding_cache",
 ]
 

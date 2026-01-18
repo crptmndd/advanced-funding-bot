@@ -166,6 +166,8 @@ class ExchangeRegistry:
         cls,
         exchanges: Optional[List[str]] = None,
         timeout: float = 30.0,
+        use_cache: bool = True,
+        close_sessions: bool = False,
     ) -> List[ExchangeFundingRates]:
         """
         Fetch funding rates from all exchanges in parallel.
@@ -174,19 +176,21 @@ class ExchangeRegistry:
             exchanges: Optional list of exchange names to fetch from.
                        If None, fetches from all available exchanges.
             timeout: Timeout in seconds for each exchange request.
+            use_cache: Whether to reuse cached exchange instances (recommended).
+            close_sessions: Whether to close HTTP sessions after fetching.
+                           Set True for one-off fetches, False for repeated use.
             
         Returns:
             List of ExchangeFundingRates objects, one per exchange.
         """
-        # Get exchange instances
-        if exchanges:
-            exchange_instances = {}
-            for name in exchanges:
-                instance = cls.get_exchange(name)
-                if instance and instance.is_available:
-                    exchange_instances[name] = instance
-        else:
-            exchange_instances = cls.get_all_exchanges(only_available=True)
+        # Get exchange instances (with caching for efficiency)
+        exchange_instances = {}
+        target_exchanges = exchanges if exchanges else list(cls._exchanges.keys())
+        
+        for name in target_exchanges:
+            instance = cls.get_exchange(name, use_cache=use_cache)
+            if instance and instance.is_available:
+                exchange_instances[name] = instance
         
         if not exchange_instances:
             logger.warning("No available exchanges to fetch funding rates from")
@@ -225,6 +229,15 @@ class ExchangeRegistry:
         ]
         
         results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Close sessions if requested (to free resources)
+        if close_sessions:
+            for exchange in exchange_instances.values():
+                if hasattr(exchange, 'close'):
+                    try:
+                        await exchange.close()
+                    except Exception as e:
+                        logger.debug(f"Error closing exchange session: {e}")
         
         # Filter out exceptions and return valid results
         valid_results = []
